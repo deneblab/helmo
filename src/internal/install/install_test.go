@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -501,7 +502,7 @@ func TestHelmoWarnsAboutUnreadableCredentials(t *testing.T) {
 	if err := os.Chmod(creds, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out := e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds)
+	out := e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds, "--user", "1654:1654")
 	if os.Getuid() != 1654 && !strings.Contains(out, "Helmo (UID 1654) cannot read") {
 		t.Errorf("no warning about permissions:\n%s", out)
 	}
@@ -513,7 +514,7 @@ func TestHelmoWarnsAboutUnreadableCredentials(t *testing.T) {
 	if err := os.Chmod(creds, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = e.mustRun(e.dir("helmo2"), "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds)
+	out = e.mustRun(e.dir("helmo2"), "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds, "--user", "1654:1654")
 	if strings.Contains(out, "Helmo (UID 1654) cannot read") {
 		t.Errorf("unexpected warning:\n%s", out)
 	}
@@ -576,5 +577,42 @@ func TestAppWithFileProviderPrintsRoutersAndRestart(t *testing.T) {
 	}
 	if !strings.Contains(out, "docker restart helmo-helmo-1") {
 		t.Errorf("no restart hint:\n%s", out)
+	}
+}
+
+// Helmo runs as the owner of the apps by default, so it can read their .env
+// files, which are usually readable by their owner only.
+func TestHelmoUserDefaultsToOwnerOfApps(t *testing.T) {
+	e := newEnv(t)
+	work := e.dir("helmo")
+	apps := e.dir("apps")
+	e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", apps)
+	want := "HELMO_USER=" + strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()) + "\n"
+	if os.Getuid() == 0 {
+		want = "HELMO_USER=1654:1654\n" // a root-owned directory is no default
+	}
+	if got := e.read(filepath.Join(work, ".env")); !strings.Contains(got, want) {
+		t.Errorf(".env lacks %q:\n%s", want, got)
+	}
+	e.mustFail(e.dir("bad"), "UID:GID", "helmo", "--yes", "--version", "1.2.3", "--apps-dir", apps, "--user", "web")
+}
+
+func TestAppWarnsWhenHelmoCannotReadEnv(t *testing.T) {
+	e := newEnv(t)
+	d := e.app("blog", literalTag)
+	e.write(filepath.Join(d, ".env"), "SECRET=x\n")
+	if err := os.Chmod(filepath.Join(d, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := e.mustRun(d, "app", "--port", "8600", "--user", "1654:1654")
+	if os.Getuid() != 1654 && !strings.Contains(out, "cannot read .env") {
+		t.Errorf("no warning:\n%s", out)
+	}
+	if !strings.Contains(out, "chown -R 1654:1654") {
+		t.Errorf("chown hint does not use the given user:\n%s", out)
+	}
+	// As the owner of the files (the default) there is nothing to warn about.
+	if out := e.mustRun(d, "app", "--port", "8600"); strings.Contains(out, "cannot read") {
+		t.Errorf("unexpected warning:\n%s", out)
 	}
 }

@@ -10,6 +10,7 @@
 #   --version X.Y.Z    image version (default: the newest in ghcr.io/deneblab/helmo)
 #   --apps-dir DIR     directory with one subdirectory per app (default /srv/apps)
 #   --network NAME     Docker network Traefik reaches its backends on (default traefik)
+#   --user UID:GID     user Helmo runs as; it must read the apps' files (default: owner of the apps directory)
 #   --docker-config F  registry credentials file for Helmo (default ./docker-config/config.json)
 #   --traefik-api URL  Traefik API (default: the host port Traefik publishes for its port 8080)
 #   --yes              ask nothing: use the defaults and keep files that already exist
@@ -19,6 +20,7 @@
 #   --host NAME        accept only this host name (may be given more than once)
 #   --service NAME     the Compose service Helmo versions (needed with several services)
 #   --apps-dir DIR     the apps directory of Helmo, to check where this app lives
+#   --user UID:GID     user Helmo runs as (default: read from the running Helmo)
 #   --traefik-api URL  Traefik API, to print its configuration when it uses the File provider
 #   --yes              ask nothing and keep files that already exist
 #
@@ -35,6 +37,9 @@ NETWORK=
 DOCKER_GID=
 DOCKER_CONFIG_FILE=
 TRAEFIK_API=
+HELMO_USER=
+HELMO_UID=
+HELMO_GID=
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -128,7 +133,8 @@ services:
   helmo:
     image: ghcr.io/$IMAGE_REPO:\${HELMO_TAG:?set HELMO_TAG to an image version}
     restart: unless-stopped
-    user: "1654:1654"            # owner of $APPS_DIR/*/.helmo
+    # Must read the apps' compose files and .env and write their .helmo.
+    user: "\${HELMO_USER:-1654:1654}"
     group_add:
       - "\${DOCKER_GID:?set DOCKER_GID}"
     stop_grace_period: 30s
@@ -171,6 +177,7 @@ without_labels() {
 env_file() {
     cat <<EOF
 HELMO_TAG=$VERSION
+HELMO_USER=$HELMO_USER
 DOCKER_GID=$DOCKER_GID
 DOCKER_CONFIG_FILE=$DOCKER_CONFIG_FILE
 TRAEFIK_NETWORK=$NETWORK
@@ -247,7 +254,26 @@ traefik_config() {
     docker run --rm --network host "$1" -traefik-config -traefik-api "$(traefik_api)" -ports "$2"
 }
 
-# readable_by_helmo FILE: whether UID 1654 (groups 1654 and DOCKER_GID) can read FILE.
+# set_user UID:GID: validates and splits the user Helmo runs as.
+set_user() {
+    case $1 in
+        [0-9]*:[0-9]*) ;;
+        *) die "the user must be UID:GID such as 1001:1001, got '$1'" ;;
+    esac
+    HELMO_UID=${1%%:*}
+    HELMO_GID=${1#*:}
+    case $HELMO_UID$HELMO_GID in *[!0-9]*) die "the user must be UID:GID such as 1001:1001, got '$1'" ;; esac
+    HELMO_USER=$1
+}
+
+# owner_of DIR: "uid:gid" of DIR, unless it belongs to root.
+owner_of() {
+    o=$(stat -c '%u:%g' "$1" 2>/dev/null) || return 0
+    case $o in 0:*) ;; *) printf '%s' "$o" ;; esac
+}
+
+# readable_by_helmo FILE: whether Helmo's user (HELMO_UID, groups HELMO_GID and
+# DOCKER_GID) can read FILE.
 # Only the file's own mode matters: Docker mounts it from the host as root.
 readable_by_helmo() {
     info=$(stat -c '%u %g %a' "$1" 2>/dev/null) || return 1
@@ -262,8 +288,8 @@ readable_by_helmo() {
     g=${g%?}
     o=${mode#??}
     [ $((o & 4)) -ne 0 ] && return 0
-    [ "$uid" = 1654 ] && [ $((u & 4)) -ne 0 ] && return 0
-    { [ "$gid" = 1654 ] || [ "$gid" = "$DOCKER_GID" ]; } && [ $((g & 4)) -ne 0 ] && return 0
+    [ "$uid" = "$HELMO_UID" ] && [ $((u & 4)) -ne 0 ] && return 0
+    { [ "$gid" = "$HELMO_GID" ] || [ "$gid" = "$DOCKER_GID" ]; } && [ $((g & 4)) -ne 0 ] && return 0
     return 1
 }
 
@@ -280,6 +306,7 @@ cmd_helmo() {
             --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
             --network) [ $# -ge 2 ] || die "--network needs a value"; NETWORK=$2; shift 2 ;;
             --docker-config) [ $# -ge 2 ] || die "--docker-config needs a value"; DOCKER_CONFIG_FILE=$2; shift 2 ;;
+            --user) [ $# -ge 2 ] || die "--user needs a value"; set_user "$2"; shift 2 ;;
             --traefik-api) [ $# -ge 2 ] || die "--traefik-api needs a value"; TRAEFIK_API=$2; shift 2 ;;
             --yes | -y) YES=1; shift ;;
             *) die "unknown option '$1' for helmo" ;;
@@ -296,6 +323,14 @@ cmd_helmo() {
     [ -n "$APPS_DIR" ] || APPS_DIR=$(ask "Directory with the apps (one subdirectory per app, e.g. /srv/apps/cadastro)" /srv/apps) || exit 1
     case $APPS_DIR in /*) ;; *) die "the apps directory must be an absolute path, got '$APPS_DIR'" ;; esac
     safe "$APPS_DIR" "the apps directory"
+
+    # Compose reads each app's compose file and .env as Helmo's user, so the
+    # owner of the app files is the natural choice.
+    if [ -z "$HELMO_USER" ]; then
+        default=$(owner_of "$APPS_DIR")
+        [ -n "$default" ] || default=1654:1654
+        set_user "$(ask "User Helmo runs as, UID:GID (it must read the apps' .env files)" "$default")" || exit 1
+    fi
 
     if [ -z "$NETWORK" ]; then
         found=$(traefik_networks)
@@ -340,10 +375,10 @@ cmd_helmo() {
     esac
     if ! readable_by_helmo "$DOCKER_CONFIG_FILE"; then
         if [ "$dedicated" = 1 ] && [ "$(id -u)" = 0 ]; then
-            chown 1654:1654 "$DOCKER_CONFIG_FILE" && chmod 600 "$DOCKER_CONFIG_FILE"
+            chown "$HELMO_USER" "$DOCKER_CONFIG_FILE" && chmod 600 "$DOCKER_CONFIG_FILE"
         else
-            say "warning: Helmo (UID 1654) cannot read $DOCKER_CONFIG_FILE, so private registries will fail:"
-            say "    sudo chown 1654:1654 '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'"
+            say "warning: Helmo (UID $HELMO_UID) cannot read $DOCKER_CONFIG_FILE, so private registries will fail:"
+            say "    sudo chown $HELMO_USER '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'"
         fi
     fi
 
@@ -387,7 +422,7 @@ cmd_helmo() {
   - Port 8080 of Helmo must not be published.
 For a private registry, log in once with a token that can only read images:
   docker --config '$(dirname "$DOCKER_CONFIG_FILE")' login <registry>
-  sudo chown 1654:1654 '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'
+  sudo chown $HELMO_USER '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'
 Next, for each app, in its directory:
   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port <port>
 EOF
@@ -399,6 +434,14 @@ EOF
 helmo_container() {
     command -v docker >/dev/null 2>&1 || return 0
     docker ps --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep " ghcr.io/${IMAGE_REPO}[:@]" | head -n 1 || true
+}
+
+# helmo_user_of_running: the UID:GID a running Helmo container uses, if any.
+helmo_user_of_running() {
+    cid=$(helmo_container | cut -d' ' -f1)
+    [ -n "$cid" ] || return 0
+    u=$(docker inspect -f '{{.Config.User}}' "$cid" 2>/dev/null || true)
+    case $u in [0-9]*:[0-9]*) printf '%s' "$u" ;; esac
 }
 
 # apps_dir_of_helmo: the HELMO_APPS_DIR of a running Helmo container, if any.
@@ -486,6 +529,7 @@ cmd_app() {
             --service) [ $# -ge 2 ] || die "--service needs a value"; SERVICE=$2; shift 2 ;;
             --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
             --traefik-api) [ $# -ge 2 ] || die "--traefik-api needs a value"; TRAEFIK_API=$2; shift 2 ;;
+            --user) [ $# -ge 2 ] || die "--user needs a value"; set_user "$2"; shift 2 ;;
             --yes | -y) YES=1; shift ;;
             *) die "unknown option '$1' for app" ;;
         esac
@@ -500,6 +544,12 @@ cmd_app() {
         [ -f "$f" ] && { compose=$f; break; }
     done
     [ -n "$compose" ] || die "no Compose file in $APP_DIR; run this in the directory of the app"
+
+    if [ -z "$HELMO_USER" ]; then
+        running=$(helmo_user_of_running)
+        [ -n "$running" ] || running=$(owner_of "$(dirname "$APP_DIR")")
+        set_user "${running:-1654:1654}"
+    fi
 
     if [ -z "$PORTS" ]; then
         taken=$(ports_of_other_apps | cut -d' ' -f1)
@@ -612,12 +662,22 @@ cmd_app() {
     [ -z "$ref" ] || check_registry "$ref"
 
     if [ "$(id -u)" = 0 ]; then
-        chown -R 1654:1654 .helmo
-    elif [ "$(stat -c %u .helmo 2>/dev/null || echo 0)" != 1654 ]; then
+        chown -R "$HELMO_USER" .helmo
+    elif [ "$(stat -c %u .helmo 2>/dev/null || echo 0)" != "$HELMO_UID" ]; then
         say ""
-        say "Helmo runs as UID 1654 and must own .helmo; run:"
-        say "    sudo chown -R 1654:1654 '$APP_DIR/.helmo'"
+        say "Helmo runs as UID $HELMO_UID and must own .helmo; run:"
+        say "    sudo chown -R $HELMO_USER '$APP_DIR/.helmo'"
     fi
+    # docker compose runs as Helmo's user and must read the app's own files.
+    for f in "$compose" .env; do
+        [ -f "$f" ] || continue
+        if ! readable_by_helmo "$f"; then
+            say ""
+            say "warning: Helmo (UID $HELMO_UID) cannot read $f, so start, stop and deploy will fail."
+            say "    Run Helmo as the owner of the app files (--user of the helmo command), or:"
+            say "    sudo setfacl -m u:$HELMO_UID:r '$APP_DIR/$f'"
+        fi
+    done
 
     [ -n "$APPS_DIR" ] || APPS_DIR=$(apps_dir_of_helmo)
     if [ -n "$APPS_DIR" ] && [ "$(dirname "$APP_DIR")" != "$(cd "$APPS_DIR" 2>/dev/null && pwd -P)" ]; then

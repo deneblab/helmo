@@ -63,27 +63,27 @@ files only when it starts: restart it after adding or changing an app.
 
 ## 3. Give Helmo access
 
-Helmo runs as UID 1654 in [compose.example.yaml](../compose.example.yaml). It
-reads `compose.yaml` and `.env` (Compose needs them) and writes only `.helmo/`.
-The simplest setup is that the app directory already belongs to that user:
+Helmo runs `docker compose` for the app as its own user, `HELMO_USER` in Helmo's
+`.env` (1654:1654 when not set). That user must read the app's `compose.yaml`
+and `.env` and write `.helmo/`. An `.env` usually holds secrets and is readable
+by its owner only, so run Helmo as the owner of the app files. The install
+script proposes the owner of the apps directory (`--user UID:GID` to choose):
 
 ```sh
-ls -ln /srv/apps/cadastro                      # owner 1654?
-mkdir -p /srv/apps/cadastro/.helmo
-chown -R 1654:1654 /srv/apps/cadastro/.helmo   # needed in any case
+stat -c '%u:%g' /srv/apps/cadastro             # e.g. 1001:1001 -> HELMO_USER=1001:1001
 ```
 
-If your files belong to someone else, run Helmo as that user (`user:` in the
-example) instead of loosening permissions. Do not make `.env` world-readable: it
-holds your secrets.
+`.helmo/` must belong to that user too; the `app` command checks this and the
+readability of `compose.yaml` and `.env`. Do not make `.env` world-readable to
+work around it. If Helmo has to run as another user, give it read access to
+that one file only: `setfacl -m u:<uid>:r .env`.
 
 ## 4. Set the starting version
 
 Before the first deployment tell Compose which version runs now:
 
 ```sh
-echo 'APP_TAG=v1.2.3' > /srv/apps/cadastro/.helmo/env
-chown 1654:1654 /srv/apps/cadastro/.helmo/env
+echo 'APP_TAG=v1.2.3' > /srv/apps/cadastro/.helmo/env     # as Helmo's user, or chown it
 ```
 
 Without this file, Helmo can still find the image from a running container of
@@ -94,21 +94,19 @@ the service, but plain Compose cannot resolve `${APP_TAG:?...}`.
 Public images need no credentials. For a private image Helmo reads a
 `config.json` mounted read-only (`DOCKER_CONFIG_FILE` in Helmo's `.env`). Use a
 file of its own, not `~/.docker/config.json`: that one holds the credentials of
-every registry you use and is readable only by you, while Helmo runs as UID
-1654. The install script creates an empty `docker-config/config.json` in Helmo's
+every registry you use. The install script creates an empty `docker-config/config.json` in Helmo's
 directory and warns when Helmo cannot read the file. Log in into it once, with
 a token that can only read images, and give it to Helmo:
 
 ```sh
 docker --config /srv/system/helmo/docker-config login registry.example:5000
-sudo chown 1654:1654 /srv/system/helmo/docker-config/config.json && sudo chmod 600 /srv/system/helmo/docker-config/config.json
+chmod 600 /srv/system/helmo/docker-config/config.json   # and chown it to HELMO_USER if that is not you
 ```
 
 The credentials must be stored in the file itself, not in a credential helper
 (`credsStore`), which a fresh `--config` directory does not use. Both the version
 list and `docker compose pull` use this file. Helmo reads it on every request,
-so renewing the token needs no restart (run the login with `sudo` once the file
-belongs to 1654).
+so renewing the token needs no restart.
 
 ## 6. Run Compose by hand
 

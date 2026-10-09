@@ -1,8 +1,10 @@
 # Example deployment of Helmo itself. Copy it next to a .env file that sets:
 #
 #   HELMO_TAG=1.2.3                 image version (a tag from ghcr.io/deneblab/helmo)
+#   HELMO_USER=1001:1001            owner of the apps' files (default 1654:1654)
 #   DOCKER_GID=999                  stat -c %g /var/run/docker.sock
-#   DOCKER_CONFIG_FILE=/home/you/.docker/config.json   the file docker login wrote
+#   DOCKER_CONFIG_FILE=/srv/helmo/docker-config/config.json   credentials for Helmo only
+#                                   (docker --config /srv/helmo/docker-config login <registry>)
 #   TRAEFIK_NETWORK=traefik         network Traefik reaches its backends on
 #
 # Helmo does not manage itself: update it by hand with this file.
@@ -11,7 +13,8 @@ services:
   helmo:
     image: ghcr.io/deneblab/helmo:${HELMO_TAG:?set HELMO_TAG to an image version}
     restart: unless-stopped
-    user: "1654:1654"            # owner of /srv/apps/*/.helmo
+    # Must read the apps' compose files and .env and write their .helmo.
+    user: "${HELMO_USER:-1654:1654}"
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID, see the header of this file}"
     stop_grace_period: 30s

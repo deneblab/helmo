@@ -60,9 +60,10 @@ as in [docs/traefik.md](docs/traefik.md).
    creates an empty `docker-config/config.json` for registry credentials (see
    [docs/app-setup.md](docs/app-setup.md#5-registry-credentials)). When Traefik
    uses the File provider instead of Docker labels, it prints the routers to add
-   to Traefik's dynamic configuration. Pass `--version X.Y.Z`, `--apps-dir DIR`,
-   `--network NAME`, `--docker-config FILE`, `--traefik-api URL` and `--yes` to
-   skip the questions.
+   to Traefik's dynamic configuration. Helmo runs as the owner of the apps
+   directory, so it can read the apps' `.env` files. Pass `--version X.Y.Z`,
+   `--apps-dir DIR`, `--user UID:GID`, `--network NAME`, `--docker-config FILE`,
+   `--traefik-api URL` and `--yes` to skip the questions.
 
 2. Prepare each app from its own directory (the one with its Compose file):
 
