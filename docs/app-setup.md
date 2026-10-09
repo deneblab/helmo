@@ -58,7 +58,8 @@ ports: [8600]
 ```
 
 Optional keys: `hosts`, `service` (needed when the project has several services),
-`health_timeout`. See the [README](../README.md#configuration).
+`health_timeout`. See the [README](../README.md#configuration). Helmo reads these
+files only when it starts: restart it after adding or changing an app.
 
 ## 3. Give Helmo access
 
@@ -90,20 +91,24 @@ the service, but plain Compose cannot resolve `${APP_TAG:?...}`.
 
 ## 5. Registry credentials
 
-For a private image log in once on the host with a token that can only read
-packages. Use a dedicated config directory so the credentials are stored in the
-file itself and not in a credential helper:
+Public images need no credentials. For a private image Helmo reads a
+`config.json` mounted read-only (`DOCKER_CONFIG_FILE` in Helmo's `.env`). Use a
+file of its own, not `~/.docker/config.json`: that one holds the credentials of
+every registry you use and is readable only by you, while Helmo runs as UID
+1654. The install script creates an empty `docker-config/config.json` in Helmo's
+directory and warns when Helmo cannot read the file. Log in into it once, with
+a token that can only read images, and give it to Helmo:
 
 ```sh
-docker --config ~/helmo-docker login ghcr.io
+docker --config /srv/system/helmo/docker-config login registry.example:5000
+sudo chown 1654:1654 /srv/system/helmo/docker-config/config.json && sudo chmod 600 /srv/system/helmo/docker-config/config.json
 ```
 
-Mount `~/helmo-docker/config.json` read-only into Helmo (`DOCKER_CONFIG_FILE` in
-the example). Both the version list and `docker compose pull` use it. After
-renewing the token run the same command again; Helmo reads the file on every
-request and needs no restart.
-
-Public images need no credentials.
+The credentials must be stored in the file itself, not in a credential helper
+(`credsStore`), which a fresh `--config` directory does not use. Both the version
+list and `docker compose pull` use this file. Helmo reads it on every request,
+so renewing the token needs no restart (run the login with `sudo` once the file
+belongs to 1654).
 
 ## 6. Run Compose by hand
 

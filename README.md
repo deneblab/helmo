@@ -31,8 +31,10 @@ browser ──► Traefik (one entrypoint per app port) ──► the app       
                                                        └─ /srv/apps/<id>/     .helmo/app.yaml, .helmo/env
 ```
 
-- One global Traefik router sends every `/_helmo` request to Helmo, on every
-  port, also while the app itself is stopped. See [docs/traefik.md](docs/traefik.md).
+- A Traefik router of Helmo's own sends every `/_helmo` request to Helmo, on the
+  apps' ports, also while the app itself is stopped. It comes from labels or,
+  with the File provider, from Traefik's dynamic configuration. See
+  [docs/traefik.md](docs/traefik.md).
 - Helmo knows which app a request is for from the port Traefik accepted it on
   (`X-Forwarded-Port`), checked against the apps' `.helmo/app.yaml`.
 - The Compose file is the source of truth. Helmo changes only one variable,
@@ -54,9 +56,13 @@ as in [docs/traefik.md](docs/traefik.md).
    ```
 
    It finds the newest image version, asks for the apps directory (default
-   `/srv/apps`), writes `compose.yaml` and `.env` here and starts Helmo. Pass
-   `--version X.Y.Z`, `--apps-dir DIR`, `--network NAME` and `--yes` to skip the
-   questions.
+   `/srv/apps`), writes `compose.yaml` and `.env` here and starts Helmo. It
+   creates an empty `docker-config/config.json` for registry credentials (see
+   [docs/app-setup.md](docs/app-setup.md#5-registry-credentials)). When Traefik
+   uses the File provider instead of Docker labels, it prints the routers to add
+   to Traefik's dynamic configuration. Pass `--version X.Y.Z`, `--apps-dir DIR`,
+   `--network NAME`, `--docker-config FILE`, `--traefik-api URL` and `--yes` to
+   skip the questions.
 
 2. Prepare each app from its own directory (the one with its Compose file):
 

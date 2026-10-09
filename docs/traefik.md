@@ -24,10 +24,20 @@ providers:
 
 The ports you list in each `.helmo/app.yaml` must match these entrypoints.
 
-## The global router
+## Helmo's router
+
+Which variant applies depends on the providers Traefik uses. The install script
+asks the Traefik API (`/api/overview`) and picks the variant itself; to check by
+hand:
+
+```sh
+curl -s http://127.0.0.1:8081/api/overview | grep -o '"providers":[^]]*]'   # 8081: the host port of Traefik's API
+```
+
+### Docker provider: labels
 
 Helmo carries the labels itself ([compose.example.yaml](../compose.example.yaml)); the
-install script writes the same file and prints a reminder, but does not touch Traefik:
+install script writes the same file:
 
 ```yaml
 traefik.enable: "true"
@@ -38,29 +48,59 @@ traefik.http.services.helmo.loadbalancer.server.port: "8080"
 ```
 
 - There is **no `entryPoints` label**, so the router listens on all entrypoints.
-  This is what makes one Helmo serve every app.
+  This is what makes one Helmo serve every app without changing its labels.
+  On ports that belong to no app Helmo answers 404.
 - The **priority** must be higher than the routers of the apps. Their rules
   often match every path, and the longer rule would otherwise win.
 - The router belongs to Helmo, not to an app, so the panel keeps working when an
-  app is stopped or removed. Its certificate, if you use TLS, must not depend on
-  the app either.
+  app is stopped or removed.
+- A router without TLS serves plain HTTP only. If the apps' entrypoints are
+  HTTPS, add a second router with `tls` (see the File variant below).
 - Helmo must be on a network Traefik can reach. Do not publish port 8080.
 
-If your apps are defined in Traefik's file provider rather than with labels,
-the same router can be written there:
+### File provider: dynamic configuration
+
+When Traefik does not use the Docker provider it ignores labels, and Helmo's
+routers go into its dynamic configuration file next to the apps' routers. The
+install script then writes `compose.yaml` without labels and prints the routers
+for you, generated from the Traefik API by `helmo -traefik-config`; the `app`
+command prints them again with the new app's entrypoint. For example:
 
 ```yaml
 http:
   routers:
-    helmo:
+    helmo-tls:
       rule: PathPrefix(`/_helmo`)
       priority: 10000
+      entryPoints: ["extraction-manager-develop"]   # the entrypoints of the apps' ports
       service: helmo
+      tls:                                           # the same as the app's router
+        domains:
+          - main: "node.example.ts.net"
   services:
     helmo:
       loadBalancer:
         servers:
-          - url: http://helmo:8080
+          - url: "http://helmo:8080"
+```
+
+- **Limit `entryPoints` to the apps' entrypoints.** Without them the router
+  also takes `/_helmo` on every other port, such as 80, 443 and the dashboard.
+  Add the entrypoint of each new app.
+- **TLS like the app.** An entrypoint that serves HTTPS needs a router with
+  `tls`, with the same certificate settings as the app's router; a router
+  without `tls` would only match plain HTTP there. Entrypoints with plain HTTP
+  get a router without `tls`.
+- **Address Helmo by its Compose service name** (`helmo`), which is a DNS alias
+  on the shared network. The container name (`helmo-helmo-1`) depends on the
+  project name.
+- Traefik reloads the file by itself when the provider has `watch: true`;
+  check with `curl -s http://127.0.0.1:8081/api/http/routers/helmo-tls@file`.
+
+To generate the routers by hand (with the Helmo version you run):
+
+```sh
+docker run --rm --network host ghcr.io/deneblab/helmo:<version> -traefik-config -traefik-api http://127.0.0.1:8081 -ports 8102,8085
 ```
 
 ## How Helmo recognises the app
