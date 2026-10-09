@@ -64,6 +64,9 @@ as in [docs/traefik.md](docs/traefik.md).
    curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
    ```
 
+   Without `--port` it lists the ports Traefik publishes that no other app uses
+   and asks which one is this app's.
+
    It writes `.helmo/app.yaml`, tells you what to change in the app's Compose
    file (it never edits it) and how to give Helmo ownership of `.helmo`. Details
    and the manual steps are in [docs/app-setup.md](docs/app-setup.md).

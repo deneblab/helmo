@@ -393,3 +393,64 @@ exit 0
 		t.Errorf(".env:\n%s", got)
 	}
 }
+
+const traefikPortsStub = `#!/bin/sh
+echo "docker $*" >> "$STUBLOG"
+case "$1" in
+	ps) echo "abc123 traefik:v3.1 traefik" ;;
+	port) cat <<PORTS
+80/tcp -> 0.0.0.0:80
+443/tcp -> 0.0.0.0:443
+8080/tcp -> 0.0.0.0:8081
+8085/tcp -> 0.0.0.0:8085
+8085/tcp -> [::]:8085
+8086/tcp -> 0.0.0.0:8086
+8087/tcp -> 0.0.0.0:8087
+PORTS
+	;;
+esac
+exit 0
+`
+
+func TestAppOffersFreeTraefikPorts(t *testing.T) {
+	e := newEnv(t)
+	e.stub("docker", traefikPortsStub)
+	other := e.app("other", literalTag)
+	e.write(filepath.Join(other, ".helmo", "app.yaml"), "enabled: true\nports: [8085, 8086]\n")
+	d := e.app("blog", literalTag)
+
+	// Only 8087 is left (80, 443, the dashboard 8081->8080 and the ports of
+	// "other" do not count), so --yes takes it.
+	out := e.mustRun(d, "app", "--yes")
+	if !strings.Contains(out, "Traefik ports not used by another app: 8087") {
+		t.Errorf("output:\n%s", out)
+	}
+	if got := e.read(filepath.Join(d, ".helmo", "app.yaml")); !strings.Contains(got, "ports: [8087]") {
+		t.Errorf("app.yaml:\n%s", got)
+	}
+
+	// Two free ports: there is no sensible default, so --yes needs --port.
+	if err := os.RemoveAll(filepath.Join(d, ".helmo")); err != nil {
+		t.Fatal(err)
+	}
+	e.write(filepath.Join(other, ".helmo", "app.yaml"), "enabled: true\nports: [8085]\n")
+	second := e.app("second", literalTag)
+	e.mustFail(second, "give the Traefik port", "app", "--yes")
+	out, _ = e.run(second, "app", "--yes")
+	if !strings.Contains(out, "not used by another app: 8086 8087") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+func TestAppSuggestsTheExactImageLine(t *testing.T) {
+	e := newEnv(t)
+	d := e.app("extraction", "services:\n  web:\n    image: ${IMG:-registry.example:5000/app}:${IMG_TAG:-latest}\n")
+	out := e.mustRun(d, "app", "--port", "8102")
+	want := "change:     image: ${IMG:-registry.example:5000/app}:${APP_TAG:?use .helmo/dc instead of docker compose}"
+	if !strings.Contains(out, want) {
+		t.Errorf("output lacks %q:\n%s", want, out)
+	}
+	if !strings.Contains(out, "not latest") {
+		t.Errorf("no warning about latest:\n%s", out)
+	}
+}

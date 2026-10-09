@@ -169,11 +169,28 @@ EOF
 
 # ---- helmo command -----------------------------------------------------------
 
+# traefik_ids: ids of running Traefik containers (by image or container name).
+traefik_ids() {
+    docker ps --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i traefik | cut -d' ' -f1 || true
+}
+
 # traefik_networks: the user-defined networks of running Traefik containers.
 traefik_networks() {
-    for cid in $(docker ps --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i traefik | cut -d' ' -f1); do
+    for cid in $(traefik_ids); do
         docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$cid" 2>/dev/null
     done | grep -v -x -e bridge -e host -e none -e '' | sort -u
+}
+
+# traefik_ports: ports Traefik publishes as itself (same port on the host and in the
+# container), without 80 and 443. These are the entrypoints of the apps.
+traefik_ports() {
+    for cid in $(traefik_ids); do
+        docker port "$cid" 2>/dev/null |
+            sed -n 's|^\([0-9][0-9]*\)/tcp -> .*:\([0-9][0-9]*\)$|\1 \2|p' |
+            while read -r inner outer; do
+                if [ "$inner" = "$outer" ] && [ "$outer" != 80 ] && [ "$outer" != 443 ]; then echo "$outer"; fi
+            done
+    done | sort -n -u
 }
 
 detect_docker_gid() {
@@ -309,7 +326,18 @@ cmd_app() {
     [ -n "$compose" ] || die "no Compose file in $APP_DIR; run this in the directory of the app"
 
     if [ -z "$PORTS" ]; then
-        PORTS=$(ask "Traefik port of the app" "") || exit 1
+        taken=$(ports_of_other_apps | cut -d' ' -f1)
+        free=
+        for port in $(traefik_ports); do
+            printf '%s\n' "$taken" | grep -q -x "$port" || free="$free $port"
+        done
+        default=
+        if [ -n "$free" ]; then
+            say "Traefik ports not used by another app:$free"
+            # shellcheck disable=SC2086
+            [ "$(set -- $free; echo $#)" = 1 ] && default=${free# }
+        fi
+        PORTS=$(ask "Traefik port of the app" "$default") || exit 1
     fi
     for port in $PORTS; do
         case $port in '' | *[!0-9]*) die "port '$port' is not a number" ;; esac
@@ -353,12 +381,22 @@ cmd_app() {
 
     if [ "$todo" = 1 ]; then
         say ""
-        say "$compose: the image of the versioned service must take its tag from APP_TAG."
-        say "Change that service's line to (the script does not edit your file):"
-        # shellcheck disable=SC2016 # literal text for the user to copy
-        say '    image: <image>:${APP_TAG:?use .helmo/dc instead of docker compose}'
-        say "Current image lines:"
-        grep -n '^[[:space:]]*image:' "$compose" | sed 's/^/    /' || true
+        say "$compose: the tag of the versioned service's image must come from APP_TAG."
+        say "The script does not edit your file; change the tag part of the image line:"
+        if [ "$count" = 1 ]; then
+            line=$(grep -n '^[[:space:]]*image:' "$compose" | head -n 1)
+            say "  now:    line ${line%%:*}:${line#*:}"
+            # shellcheck disable=SC2016 # literal ${APP_TAG in the replacement
+            suggested=$(printf '%s\n' "${line#*:}" | sed -e 's|:${[^}]*}[[:space:]]*$|:${APP_TAG:?use .helmo/dc instead of docker compose}|' -e t \
+                -e 's|:[A-Za-z0-9._-]*[[:space:]]*$|:${APP_TAG:?use .helmo/dc instead of docker compose}|')
+            say "  change: $suggested"
+        else
+            # shellcheck disable=SC2016 # literal text for the user to copy
+            say '  use  :${APP_TAG:?use .helmo/dc instead of docker compose}  as the tag of the service Helmo versions'
+            say "Image lines:"
+            grep -n '^[[:space:]]*image:' "$compose" | sed 's/^/    /' || true
+        fi
+        say "APP_TAG must be a real version (such as 1.2.3 or v1.2.3), not latest."
     fi
 
     # The version that runs now, so Compose can resolve APP_TAG before the first deployment.

@@ -22,7 +22,8 @@ In the app directory (the one with its Compose file):
 curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
 ```
 
-Options: `--port N` (repeat for more ports), `--host NAME` (repeatable),
+Options: `--port N` (repeat for more ports; when omitted, the script lists the ports
+Traefik publishes that no other app uses, and a single free one is the default), `--host NAME` (repeatable),
 `--service NAME`, `--apps-dir DIR`, `--yes`. The script does steps 2 and 3 below,
 checks that no other app uses the port, and for step 1 only tells you what to
 change, because the Compose file is yours. When the file has a single image with a
