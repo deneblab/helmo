@@ -28,7 +28,12 @@ func (f *Fake) StreamLogs(ctx context.Context, id string, opts LogOptions, emit 
 	if f.LogsStart != nil {
 		f.LogsStart()
 	}
-	lines := f.Logs[id]
+	var lines []LogLine
+	for _, l := range f.Logs[id] {
+		if opts.Since.IsZero() || !l.Time.Before(opts.Since) {
+			lines = append(lines, l)
+		}
+	}
 	if opts.Tail >= 0 && opts.Tail < len(lines) {
 		lines = lines[len(lines)-opts.Tail:]
 	}

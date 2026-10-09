@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"helmo/internal/docker"
@@ -31,8 +32,10 @@ type logEvent struct {
 
 // logs streams container output as Server-Sent Events:
 //
-//	GET /_helmo/api/logs?service=web&tail=100&follow=1
+//	GET /_helmo/api/logs?service=web&tail=100&follow=1[&since=1760000000.123]
 //
+// since (Unix seconds) lets the page reconnect after a restart without
+// repeating the lines it already shows.
 // The container is always picked from the resolved app's own Compose
 // project; the client never supplies a container ID. Lines pass through a
 // small channel, so a slow client slows Docker reading instead of growing
@@ -54,6 +57,15 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		tail = n
 	}
 	follow := q.Get("follow") != "0"
+	var since time.Time
+	if v := q.Get("since"); v != "" {
+		t, ok := parseUnix(v)
+		if !ok {
+			http.Error(w, "since must be Unix seconds, e.g. 1760000000.5", http.StatusBadRequest)
+			return
+		}
+		since = t
+	}
 
 	lookupCtx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
 	cs, err := s.Docker.ProjectContainers(lookupCtx, info.App.Dir)
@@ -101,7 +113,7 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	lines := make(chan docker.LogLine, logChannelSize)
 	errc := make(chan error, 1)
 	go func() {
-		errc <- s.Docker.StreamLogs(ctx, c.ID, docker.LogOptions{Tail: tail, Follow: follow}, func(l docker.LogLine) error {
+		errc <- s.Docker.StreamLogs(ctx, c.ID, docker.LogOptions{Tail: tail, Follow: follow, Since: since}, func(l docker.LogLine) error {
 			select {
 			case lines <- l:
 				return nil
@@ -185,4 +197,28 @@ func (s *Server) releaseStream(appID string) {
 	if s.streams[appID]--; s.streams[appID] <= 0 {
 		delete(s.streams, appID)
 	}
+}
+
+// parseUnix reads Unix seconds with an optional fraction of up to 9 digits.
+func parseUnix(v string) (time.Time, bool) {
+	secPart, fracPart, hasFrac := strings.Cut(v, ".")
+	if secPart == "" || len(secPart) > 12 || (hasFrac && (fracPart == "" || len(fracPart) > 9)) {
+		return time.Time{}, false
+	}
+	sec, err := strconv.ParseInt(secPart, 10, 64)
+	if err != nil || sec < 0 {
+		return time.Time{}, false
+	}
+	var nsec int64
+	if hasFrac {
+		n, err := strconv.ParseInt(fracPart, 10, 64)
+		if err != nil || n < 0 {
+			return time.Time{}, false
+		}
+		for i := len(fracPart); i < 9; i++ {
+			n *= 10
+		}
+		nsec = n
+	}
+	return time.Unix(sec, nsec).UTC(), true
 }

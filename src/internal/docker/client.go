@@ -239,6 +239,9 @@ func (c *Client) StreamLogs(ctx context.Context, id string, opts LogOptions, emi
 	if opts.Follow {
 		q.Set("follow", "1")
 	}
+	if !opts.Since.IsZero() {
+		q.Set("since", fmt.Sprintf("%d.%09d", opts.Since.Unix(), opts.Since.Nanosecond()))
+	}
 	resp, err := c.open(ctx, c.api(ctx, "/containers/"+url.PathEscape(id)+"/logs"), q)
 	if err != nil {
 		return err

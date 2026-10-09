@@ -24,8 +24,9 @@ type LogLine struct {
 
 // LogOptions selects what StreamLogs returns.
 type LogOptions struct {
-	Tail   int  // number of most recent lines first
-	Follow bool // keep streaming new lines until ctx ends or the container stops
+	Tail   int       // number of most recent lines first
+	Follow bool      // keep streaming new lines until ctx ends or the container stops
+	Since  time.Time // when set, only lines written at or after this time
 }
 
 // readLogs turns a Docker log stream into lines. Without a TTY the stream is

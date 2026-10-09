@@ -5,6 +5,8 @@
   const STATUS_EVERY_MS = 5000;
   const JOB_EVERY_MS = 1500;
   const MAX_LOG_LINES = 1500;
+  const LOG_RETRY_MIN_MS = 2000;
+  const LOG_RETRY_MAX_MS = 30000;
 
   const $ = (sel) => document.querySelector(sel);
   const el = (tag, cls, text) => {
@@ -111,7 +113,9 @@
       const r = await post('/' + op);
       show(`${op}: done` + (r && r.output ? '\n' + r.output : ''), 'ok');
     } catch (e) {
-      show(`${op} failed: ${e.message}` + (e.output ? '\n' + e.output : ''), 'error');
+      // The server already says "<op> failed"; do not repeat it.
+      const head = e.message.startsWith(op) ? e.message : `${op} failed: ${e.message}`;
+      show(head + (e.output ? '\n' + e.output : ''), 'error');
     } finally {
       opRunning = false;
       updateButtons();
@@ -257,6 +261,11 @@
   let source = null;
   let logsPaused = false;
   let logServices = '';
+  let gotLine = false;    // the current stream delivered a line
+  let lastMs = 0;         // time of the newest line shown, to continue after it
+  let lastText = '';
+  let retryTimer = null;
+  let retryDelay = LOG_RETRY_MIN_MS;
 
   function logNote(text) {
     const n = $('#log-note');
@@ -275,6 +284,31 @@
     if (atBottom) box.scrollTop = box.scrollHeight;
   }
 
+  function addMarker(text) {
+    const box = $('#log');
+    if (box.childElementCount && !box.lastElementChild.classList.contains('marker')) {
+      box.append(el('div', 'line marker', text));
+    }
+  }
+
+  // A reconnect asks for lines since the second of the last one shown;
+  // skip those already on the page.
+  function seen(ev) {
+    if (!ev.ts || !lastMs) return false;
+    const ms = Date.parse(ev.ts);
+    return ms < lastMs || (ms === lastMs && ev.text === lastText);
+  }
+
+  function forget() {
+    lastMs = 0;
+    lastText = '';
+  }
+
+  function cancelReconnect() {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
   function stopLogs() {
     if (source) {
       source.close();
@@ -282,24 +316,50 @@
     }
   }
 
-  function startLogs(tail) {
+  function startLogs(tail, sinceSeconds) {
     stopLogs();
+    cancelReconnect();
     const service = $('#log-service').value;
     if (!service) {
       logNote('The app has no containers, so there are no logs.');
       return;
     }
-    logNote('');
-    const url = `${API}/logs?tail=${tail}&service=${encodeURIComponent(service)}`;
+    let url = `${API}/logs?tail=${tail}&service=${encodeURIComponent(service)}`;
+    if (sinceSeconds) url += `&since=${sinceSeconds}`;
+    gotLine = false;
     source = new EventSource(url);
+    source.onopen = () => {
+      if (!gotLine) logNote('Connected; no output yet. New lines appear here as the app writes them.');
+    };
     source.onmessage = (m) => {
-      try { addLogLine(JSON.parse(m.data)); } catch (_) { /* ignore a malformed event */ }
+      let ev;
+      try { ev = JSON.parse(m.data); } catch (_) { return; /* ignore a malformed event */ }
+      if (seen(ev)) return;
+      if (!gotLine) {
+        gotLine = true;
+        retryDelay = LOG_RETRY_MIN_MS;
+        logNote('');
+      }
+      addLogLine(ev);
+      if (ev.ts) {
+        lastMs = Date.parse(ev.ts);
+        lastText = ev.text;
+      }
     };
     source.addEventListener('end', (m) => {
       stopLogs();
-      let msg = 'Log stream ended.';
-      try { const d = JSON.parse(m.data); if (d.text) msg += ' ' + d.text; } catch (_) { /* no detail */ }
-      logNote(msg);
+      let failure = '';
+      try { failure = JSON.parse(m.data).text || ''; } catch (_) { /* no detail */ }
+      if (failure) {
+        logNote(`Log stream ended: ${failure}. Press Resume to try again.`);
+        setPaused(true);
+        return;
+      }
+      // Docker ends a followed stream when the container stops, also for a
+      // restart; follow the container again once it is back.
+      addMarker('— container stopped or restarted —');
+      logNote('The container stopped; reconnecting when it runs again…');
+      scheduleReconnect();
     });
     source.onerror = () => {
       stopLogs();
@@ -308,9 +368,31 @@
     };
   }
 
+  // resumeLogs continues after the last line shown, or starts with a tail.
+  function resumeLogs() {
+    if (lastMs) startLogs(1000, Math.floor(lastMs / 1000));
+    else startLogs(200);
+  }
+
+  function scheduleReconnect() {
+    cancelReconnect();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!logsPaused) resumeLogs();
+    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, LOG_RETRY_MAX_MS);
+  }
+
   function setPaused(paused) {
     logsPaused = paused;
     $('#log-toggle').textContent = paused ? 'Resume' : 'Pause';
+  }
+
+  function restartForService() {
+    $('#log').replaceChildren();
+    forget();
+    retryDelay = LOG_RETRY_MIN_MS;
+    if (!logsPaused) startLogs(200);
   }
 
   function updateLogServices(containers) {
@@ -327,7 +409,11 @@
       sel.append(o);
     }
     if (services.includes(previous)) sel.value = previous;
-    if (!logsPaused) startLogs(200);
+    if (sel.value === previous && lastMs) {
+      if (!logsPaused && !source) resumeLogs();
+    } else {
+      restartForService();
+    }
   }
 
   // ---- wiring -------------------------------------------------------------
@@ -341,18 +427,17 @@
   $('#log-toggle').addEventListener('click', () => {
     if (logsPaused) {
       setPaused(false);
-      startLogs(50);
+      retryDelay = LOG_RETRY_MIN_MS;
+      resumeLogs();
     } else {
       setPaused(true);
       stopLogs();
+      cancelReconnect();
       logNote('Paused.');
     }
   });
   $('#log-clear').addEventListener('click', () => $('#log').replaceChildren());
-  $('#log-service').addEventListener('change', () => {
-    $('#log').replaceChildren();
-    if (!logsPaused) startLogs(200);
-  });
+  $('#log-service').addEventListener('change', restartForService);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refreshStatus();

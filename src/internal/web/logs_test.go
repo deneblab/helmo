@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -209,3 +210,31 @@ func routingFor(apps []config.App, s *Server) http.Handler {
 }
 
 func newRecorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
+func TestLogsSince(t *testing.T) {
+	f := &docker.Fake{
+		Projects: map[string][]docker.Container{"/srv/apps/cadastro": {{ID: "web1", Service: "web", State: "running"}}},
+		Logs: map[string][]docker.LogLine{"web1": {
+			{Time: time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC), Stream: "stdout", Text: "before"},
+			{Time: time.Date(2026, 10, 9, 8, 0, 1, 500_000_000, time.UTC), Stream: "stdout", Text: "after"},
+		}},
+	}
+	_, h := logsServer(f, "web")
+	since := time.Date(2026, 10, 9, 8, 0, 1, 0, time.UTC).Unix()
+	body := get(h, "/_helmo/api/logs?follow=0&since="+strconv.FormatInt(since, 10)+".25", "8600").Body.String()
+	if strings.Contains(body, `"before"`) || !strings.Contains(body, `"after"`) {
+		t.Errorf("since not applied:\n%s", body)
+	}
+	for _, bad := range []string{"x", "-1", "1.", "1.1234567890", "1e9"} {
+		if rec := get(h, "/_helmo/api/logs?follow=0&since="+bad, "8600"); rec.Code != http.StatusBadRequest {
+			t.Errorf("since=%s: status %d", bad, rec.Code)
+		}
+	}
+}
+
+func TestParseUnix(t *testing.T) {
+	got, ok := parseUnix("1760000000.5")
+	if !ok || !got.Equal(time.Unix(1760000000, 500_000_000)) {
+		t.Errorf("got %v %v", got, ok)
+	}
+}

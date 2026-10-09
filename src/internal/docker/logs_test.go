@@ -133,7 +133,7 @@ func TestClientStreamLogs(t *testing.T) {
 
 	c, _ := NewClient("unix://" + sock)
 	var got []LogLine
-	err = c.StreamLogs(context.Background(), "abc123", LogOptions{Tail: 50, Follow: true},
+	err = c.StreamLogs(context.Background(), "abc123", LogOptions{Tail: 50, Follow: true, Since: time.Unix(1760000000, 5)},
 		func(l LogLine) error { got = append(got, l); return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestClientStreamLogs(t *testing.T) {
 	if len(got) != 2 || got[0].Text != "first" || got[1].Stream != "stderr" || got[1].Text != "second" {
 		t.Fatalf("got %+v", got)
 	}
-	for k, want := range map[string]string{"follow": "1", "tail": "50", "timestamps": "1", "stdout": "1", "stderr": "1"} {
+	for k, want := range map[string]string{"follow": "1", "tail": "50", "timestamps": "1", "stdout": "1", "stderr": "1", "since": "1760000000.000000005"} {
 		if v := logQuery[k]; len(v) != 1 || v[0] != want {
 			t.Errorf("query %s = %v, want %s", k, v, want)
 		}
