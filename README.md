@@ -149,7 +149,21 @@ docker push ghcr.io/deneblab/helmo:<version>
 ```
 
 `.github/workflows/image.yml` runs the tests and builds the image on every push
-to `main`, and pushes it to GHCR.
+to `develop` or `production` and on pull requests. Only `production` pushes the
+image to GHCR.
+
+### Branches
+
+- `production` is the main branch. Every commit on it is a release: its image is
+  published under the version abcversion computes for it.
+- `develop` is the working and testing branch. Merge it into `production` with a
+  pull request when it is ready to ship.
+
+abcversion counts commits, and it counts them differently on the two branches:
+on `develop` every commit adds one, on `production` a merged pull request adds
+one. The two sequences overlap over time, so a `develop` image under a plain
+version number could later clash with a real `production` release. That is why
+`develop` is built and tested but never pushed.
 
 Helmo does not update itself; change `HELMO_TAG` and run `docker compose up -d`.
 
