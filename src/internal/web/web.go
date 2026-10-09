@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,6 +93,18 @@ type opJSON struct {
 	Output string `json:"output,omitempty"`
 }
 
+// tidyOutput drops the indentation and padding docker compose puts around its
+// progress lines (" Container x  Started"), so they line up in the page.
+func tidyOutput(s string) string {
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // operate handles POST /_helmo/api/{start,stop,restart} for the resolved app.
 func (s *Server) operate(w http.ResponseWriter, r *http.Request) {
 	info, ok := routing.FromContext(r.Context())
@@ -102,7 +115,7 @@ func (s *Server) operate(w http.ResponseWriter, r *http.Request) {
 	op := compose.Op(r.PathValue("op"))
 	res, err := s.Compose.Do(r.Context(), info.App, op)
 
-	status, body := http.StatusOK, opJSON{Op: string(op), Output: res.Output}
+	status, body := http.StatusOK, opJSON{Op: string(op), Output: tidyOutput(res.Output)}
 	switch {
 	case errors.Is(err, compose.ErrUnknownOp):
 		http.NotFound(w, r)

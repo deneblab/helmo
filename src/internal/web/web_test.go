@@ -148,3 +148,10 @@ func TestOperateUnknownOpAndCrossSite(t *testing.T) {
 		t.Errorf("no CSRF signal: %d", rec.Code)
 	}
 }
+
+func TestTidyOutput(t *testing.T) {
+	in := "Container serpsearch  Restarting \r\n Container serpsearch  Started\n\n"
+	if got, want := tidyOutput(in), "Container serpsearch Restarting\nContainer serpsearch Started"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
