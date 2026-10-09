@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"helmo/internal/docker"
 	"helmo/internal/registry"
 	"helmo/internal/routing"
+	"helmo/internal/traefik"
 	"helmo/internal/web"
 )
 
@@ -29,6 +32,10 @@ var version = "dev"
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	healthcheck := flag.Bool("healthcheck", false, "query the running server and exit 0 when it is healthy")
+	traefikConfig := flag.Bool("traefik-config", false, "print the Traefik dynamic configuration for Helmo (File provider) and exit")
+	traefikAPI := flag.String("traefik-api", "http://127.0.0.1:8080", "with -traefik-config: URL of the Traefik API")
+	ports := flag.String("ports", "", "with -traefik-config: comma-separated ports of the apps")
+	serviceURL := flag.String("service-url", traefik.DefaultServiceURL, "with -traefik-config: URL Traefik reaches Helmo at")
 	flag.Parse()
 
 	listen := env("HELMO_LISTEN", ":8080")
@@ -38,6 +45,8 @@ func main() {
 		return
 	case *healthcheck:
 		os.Exit(runHealthcheck(listen))
+	case *traefikConfig:
+		os.Exit(printTraefikConfig(*traefikAPI, *ports, *serviceURL))
 	}
 
 	appsDir := env("HELMO_APPS_DIR", "/srv/apps")
@@ -159,4 +168,28 @@ func dockerConfigPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".docker", "config.json")
+}
+
+// printTraefikConfig is used by scripts/install.sh, which runs it in the Helmo
+// image, so the script needs no JSON tools on the host.
+func printTraefikConfig(api, portList, serviceURL string) int {
+	var ports []int
+	for _, f := range strings.FieldsFunc(portList, func(r rune) bool { return r == ',' || r == ' ' }) {
+		p, err := strconv.Atoi(f)
+		if err != nil || p < 1 || p > 65535 {
+			fmt.Fprintf(os.Stderr, "invalid port %q\n", f)
+			return 2
+		}
+		ports = append(ports, p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := traefik.Client{HTTP: &http.Client{Timeout: 5 * time.Second}, API: api}
+	out, err := c.Config(ctx, ports, serviceURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "traefik API %s: %v\n", api, err)
+		return 1
+	}
+	fmt.Print(out)
+	return 0
 }

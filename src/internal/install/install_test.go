@@ -157,10 +157,17 @@ func TestHelmoWritesFilesAndStarts(t *testing.T) {
 	if !strings.Contains(out, "PathPrefix(`/_helmo`)") {
 		t.Errorf("Traefik hint missing:\n%s", out)
 	}
-	// With no ~/.docker/config.json an empty file is used; Compose would
-	// create a directory in its place.
-	if got := e.read(filepath.Join(work, "docker-config.json")); got != "{}\n" {
-		t.Errorf("docker-config.json = %q", got)
+	// A dedicated, empty credentials file is created: Compose would create a
+	// directory in place of a missing one, and ~/.docker/config.json holds the
+	// credentials of every registry.
+	if got := e.read(filepath.Join(work, "docker-config", "config.json")); got != "{}\n" {
+		t.Errorf("docker-config/config.json = %q", got)
+	}
+	if !strings.Contains(envFile, "DOCKER_CONFIG_FILE="+filepath.Join(work, "docker-config", "config.json")+"\n") {
+		t.Errorf(".env does not point to the dedicated file:\n%s", envFile)
+	}
+	if !strings.Contains(out, "docker --config '"+filepath.Join(work, "docker-config")+"' login") {
+		t.Errorf("no login hint:\n%s", out)
 	}
 }
 
@@ -483,5 +490,91 @@ esac
 	}
 	if !strings.Contains(out, "answers only over plain HTTP") {
 		t.Errorf("no plain-HTTP warning:\n%s", out)
+	}
+}
+
+func TestHelmoWarnsAboutUnreadableCredentials(t *testing.T) {
+	e := newEnv(t)
+	work := e.dir("helmo")
+	creds := filepath.Join(e.root, "home", ".docker", "config.json")
+	e.write(creds, `{"auths":{}}`)
+	if err := os.Chmod(creds, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds)
+	if os.Getuid() != 1654 && !strings.Contains(out, "Helmo (UID 1654) cannot read") {
+		t.Errorf("no warning about permissions:\n%s", out)
+	}
+	if !strings.Contains(out, "credentials of every registry") {
+		t.Errorf("no warning about the shared file:\n%s", out)
+	}
+
+	// World-readable is readable for Helmo too.
+	if err := os.Chmod(creds, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = e.mustRun(e.dir("helmo2"), "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"), "--docker-config", creds)
+	if strings.Contains(out, "Helmo (UID 1654) cannot read") {
+		t.Errorf("unexpected warning:\n%s", out)
+	}
+}
+
+// Traefik with the File provider only, as on the first real server: labels
+// are useless there, so compose.yaml has none and the script prints the
+// routers produced by the Helmo binary (docker run of the image).
+const fileProviderDocker = `#!/bin/sh
+echo "docker $*" >> "$STUBLOG"
+case "$1" in
+	ps)
+		case "$*" in
+			*Names*) printf 'abc123 traefik:v3.2 traefik\nhel123 ghcr.io/deneblab/helmo:1.2.3 helmo-helmo-1\n' ;;
+		esac ;;
+	port) [ "$3" = 8080/tcp ] && echo "0.0.0.0:8081" ;;
+	run) echo "ROUTERS for $*" ;;
+	network) [ "$3" = traefik ] || exit 1 ;;
+esac
+exit 0
+`
+
+const fileProviderCurl = `#!/bin/sh
+case "$*" in
+	*127.0.0.1:8081/api/overview*) echo '{"http":{},"providers":["File"]}' ;;
+	*) exit 1 ;;
+esac
+`
+
+func TestHelmoWithFileProvider(t *testing.T) {
+	e := newEnv(t)
+	e.stub("docker", fileProviderDocker)
+	e.stub("curl", fileProviderCurl)
+	apps := filepath.Join(e.root, "apps")
+	e.write(filepath.Join(apps, "blog", ".helmo", "app.yaml"), "enabled: true\nports: [8102]\n")
+	work := e.dir("helmo")
+
+	out := e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", apps, "--network", "traefik")
+
+	if compose := e.read(filepath.Join(work, "compose.yaml")); strings.Contains(compose, "traefik.") || !strings.Contains(compose, "networks: [traefik]") {
+		t.Errorf("compose.yaml should keep the network but have no labels:\n%s", compose)
+	}
+	want := "ROUTERS for run --rm --network host ghcr.io/deneblab/helmo:1.2.3 -traefik-config -traefik-api http://127.0.0.1:8081 -ports 8102"
+	if !strings.Contains(out, "File provider") || !strings.Contains(out, want) {
+		t.Errorf("output lacks the routers (%q):\n%s", want, out)
+	}
+}
+
+func TestAppWithFileProviderPrintsRoutersAndRestart(t *testing.T) {
+	e := newEnv(t)
+	e.stub("docker", fileProviderDocker)
+	e.stub("curl", fileProviderCurl)
+	other := e.app("other", literalTag)
+	e.write(filepath.Join(other, ".helmo", "app.yaml"), "enabled: true\nports: [8085]\n")
+	d := e.app("blog", literalTag)
+
+	out := e.mustRun(d, "app", "--port", "8102")
+	if !strings.Contains(out, "-ports 8085,8102") {
+		t.Errorf("routers not generated for all apps:\n%s", out)
+	}
+	if !strings.Contains(out, "docker restart helmo-helmo-1") {
+		t.Errorf("no restart hint:\n%s", out)
 	}
 }

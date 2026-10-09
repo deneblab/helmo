@@ -10,6 +10,8 @@
 #   --version X.Y.Z    image version (default: the newest in ghcr.io/deneblab/helmo)
 #   --apps-dir DIR     directory with one subdirectory per app (default /srv/apps)
 #   --network NAME     Docker network Traefik reaches its backends on (default traefik)
+#   --docker-config F  registry credentials file for Helmo (default ./docker-config/config.json)
+#   --traefik-api URL  Traefik API (default: the host port Traefik publishes for its port 8080)
 #   --yes              ask nothing: use the defaults and keep files that already exist
 #
 # Options for app:
@@ -17,6 +19,7 @@
 #   --host NAME        accept only this host name (may be given more than once)
 #   --service NAME     the Compose service Helmo versions (needed with several services)
 #   --apps-dir DIR     the apps directory of Helmo, to check where this app lives
+#   --traefik-api URL  Traefik API, to print its configuration when it uses the File provider
 #   --yes              ask nothing and keep files that already exist
 #
 # It writes only the files of Helmo itself; Traefik and your apps are not changed.
@@ -31,6 +34,7 @@ APPS_DIR=
 NETWORK=
 DOCKER_GID=
 DOCKER_CONFIG_FILE=
+TRAEFIK_API=
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -158,6 +162,12 @@ networks:
 EOF
 }
 
+# without_labels: compose.yaml without the labels block, which only the Docker
+# provider of Traefik reads.
+without_labels() {
+    awk '/^    labels:/ { skip = 1; next } skip && /^      / { next } { skip = 0; print }'
+}
+
 env_file() {
     cat <<EOF
 HELMO_TAG=$VERSION
@@ -193,6 +203,70 @@ traefik_ports() {
     done | sort -n -u
 }
 
+# traefik_api: the URL of the Traefik API: --traefik-api, else the host port
+# a running Traefik publishes for its API port 8080.
+traefik_api() {
+    if [ -n "$TRAEFIK_API" ]; then
+        printf '%s' "${TRAEFIK_API%/}"
+        return
+    fi
+    for cid in $(traefik_ids); do
+        hp=$(docker port "$cid" 8080/tcp 2>/dev/null | head -n 1 | sed 's/.*://')
+        case $hp in '' | *[!0-9]*) continue ;; esac
+        printf 'http://127.0.0.1:%s' "$hp"
+        return
+    done
+}
+
+# traefik_mode: "labels" when Traefik reads Docker labels, "file" when it does
+# not (File provider only), nothing when its API cannot be read.
+traefik_mode() {
+    api=$(traefik_api)
+    [ -n "$api" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    overview=$(curl -fsS -m 5 "$api/api/overview" 2>/dev/null) || return 0
+    providers=$(printf '%s' "$overview" | tr -d '\n' | sed -n 's/.*"providers":\[\([^]]*\)\].*/\1/p')
+    [ -n "$providers" ] || return 0
+    case $providers in
+        *'"Docker"'* | *'"docker"'* | *'"Swarm"'* | *'"swarm"'*) echo labels ;;
+        *) echo file ;;
+    esac
+}
+
+# app_ports DIR: the ports of all apps in DIR, comma-separated.
+app_ports() {
+    for f in "$1"/*/.helmo/app.yaml; do
+        [ -f "$f" ] || continue
+        sed -n 's/^ports:[[:space:]]*\[\(.*\)\].*/\1/p' "$f" | tr ',' ' '
+    done | tr ' ' '\n' | grep -x '[0-9][0-9]*' | sort -n -u | paste -s -d, - || true
+}
+
+# traefik_config IMAGE PORTS: Helmo's routers for Traefik's dynamic configuration,
+# written by the Helmo binary from what the Traefik API reports.
+traefik_config() {
+    docker run --rm --network host "$1" -traefik-config -traefik-api "$(traefik_api)" -ports "$2"
+}
+
+# readable_by_helmo FILE: whether UID 1654 (groups 1654 and DOCKER_GID) can read FILE.
+# Only the file's own mode matters: Docker mounts it from the host as root.
+readable_by_helmo() {
+    info=$(stat -c '%u %g %a' "$1" 2>/dev/null) || return 1
+    uid=${info%% *}
+    rest=${info#* }
+    gid=${rest%% *}
+    mode=${rest#* }
+    while [ ${#mode} -lt 3 ]; do mode=0$mode; done
+    mode=${mode#"${mode%???}"} # the last three digits: user, group, other
+    u=${mode%??}
+    g=${mode#?}
+    g=${g%?}
+    o=${mode#??}
+    [ $((o & 4)) -ne 0 ] && return 0
+    [ "$uid" = 1654 ] && [ $((u & 4)) -ne 0 ] && return 0
+    { [ "$gid" = 1654 ] || [ "$gid" = "$DOCKER_GID" ]; } && [ $((g & 4)) -ne 0 ] && return 0
+    return 1
+}
+
 detect_docker_gid() {
     gid=$(stat -c %g "$SOCKET" 2>/dev/null || true)
     [ -n "$gid" ] || gid=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
@@ -205,6 +279,8 @@ cmd_helmo() {
             --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION=$2; shift 2 ;;
             --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
             --network) [ $# -ge 2 ] || die "--network needs a value"; NETWORK=$2; shift 2 ;;
+            --docker-config) [ $# -ge 2 ] || die "--docker-config needs a value"; DOCKER_CONFIG_FILE=$2; shift 2 ;;
+            --traefik-api) [ $# -ge 2 ] || die "--traefik-api needs a value"; TRAEFIK_API=$2; shift 2 ;;
             --yes | -y) YES=1; shift ;;
             *) die "unknown option '$1' for helmo" ;;
         esac
@@ -242,30 +318,76 @@ cmd_helmo() {
     fi
     case $DOCKER_GID in '' | *[!0-9]*) die "cannot determine the group id of the Docker socket; check $SOCKET" ;; esac
 
-    DOCKER_CONFIG_FILE=${DOCKER_CONFIG:-$HOME/.docker}/config.json
-    if [ ! -f "$DOCKER_CONFIG_FILE" ]; then
-        # Compose would create a directory for a missing file; use an empty one.
-        DOCKER_CONFIG_FILE=$(pwd)/docker-config.json
-        [ -f "$DOCKER_CONFIG_FILE" ] || printf '{}\n' >"$DOCKER_CONFIG_FILE"
-        say "no Docker credentials found, using an empty $DOCKER_CONFIG_FILE (public images only)"
+    # A file of its own: ~/.docker/config.json holds the credentials of every
+    # registry you use, and is usually readable by you only.
+    dedicated=0
+    if [ -z "$DOCKER_CONFIG_FILE" ]; then
+        DOCKER_CONFIG_FILE=$(pwd)/docker-config/config.json
+        dedicated=1
     fi
+    case $DOCKER_CONFIG_FILE in /*) ;; *) DOCKER_CONFIG_FILE=$(pwd)/$DOCKER_CONFIG_FILE ;; esac
     safe "$DOCKER_CONFIG_FILE" "the path of config.json"
+    if [ ! -f "$DOCKER_CONFIG_FILE" ]; then
+        # Compose would create a directory for a missing file; start with an empty one.
+        { mkdir -p "$(dirname "$DOCKER_CONFIG_FILE")" && printf '{}\n' >"$DOCKER_CONFIG_FILE"; } 2>/dev/null ||
+            die "cannot create $DOCKER_CONFIG_FILE"
+        say "created an empty $DOCKER_CONFIG_FILE: enough for public images"
+    fi
+    case $DOCKER_CONFIG_FILE in
+        "$HOME"/.docker/*)
+            say "warning: $DOCKER_CONFIG_FILE holds the credentials of every registry you logged in to;"
+            say "         Helmo needs only its own (see the end of this output)." ;;
+    esac
+    if ! readable_by_helmo "$DOCKER_CONFIG_FILE"; then
+        if [ "$dedicated" = 1 ] && [ "$(id -u)" = 0 ]; then
+            chown 1654:1654 "$DOCKER_CONFIG_FILE" && chmod 600 "$DOCKER_CONFIG_FILE"
+        else
+            say "warning: Helmo (UID 1654) cannot read $DOCKER_CONFIG_FILE, so private registries will fail:"
+            say "    sudo chown 1654:1654 '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'"
+        fi
+    fi
 
     mkdir -p "$APPS_DIR" 2>/dev/null || die "cannot create $APPS_DIR; create it first (sudo mkdir -p $APPS_DIR)"
 
-    compose_yaml | write_file compose.yaml
+    MODE=$(traefik_mode)
+    case $MODE in
+        labels) say "Traefik reads Docker labels: compose.yaml carries Helmo's router" ;;
+        file) say "Traefik does not read Docker labels (File provider): compose.yaml has none" ;;
+        *) say "cannot read the Traefik API (pass --traefik-api URL); assuming Docker labels" ;;
+    esac
+    if [ "$MODE" = file ]; then
+        compose_yaml | without_labels | write_file compose.yaml
+    else
+        compose_yaml | write_file compose.yaml
+    fi
     env_file | write_file .env
 
     say "starting Helmo (version from .env)"
     docker compose up -d
     docker compose ps
 
+    say ""
+    say "Helmo is running. Not changed by this script, your part:"
+    if [ "$MODE" = file ]; then
+        image=ghcr.io/$IMAGE_REPO:$(sed -n 's/^HELMO_TAG=//p' .env)
+        ports=$(app_ports "$APPS_DIR")
+        say "  - Traefik uses the File provider. Add Helmo's routers to its dynamic configuration;"
+        say "    they only take the entrypoints of the apps, so add the router again after each app:"
+        if [ -n "$ports" ]; then
+            traefik_config "$image" "$ports" | sed 's/^/      /' ||
+                say "    (could not generate it; see docs/traefik.md)"
+        else
+            say "    no apps yet: the app command prints it."
+        fi
+    else
+        say "  - Traefik must read Docker labels and use the network '$NETWORK'; the labels in"
+        say "    compose.yaml add one router, PathPrefix(\`/_helmo\`) on every entrypoint."
+    fi
     cat <<EOF
-
-Helmo is running. Not changed by this script, your part:
-  - Traefik must read Docker labels and use the network '$NETWORK'; the labels in
-    compose.yaml add one router, PathPrefix(\`/_helmo\`) on every entrypoint.
   - Port 8080 of Helmo must not be published.
+For a private registry, log in once with a token that can only read images:
+  docker --config '$(dirname "$DOCKER_CONFIG_FILE")' login <registry>
+  sudo chown 1654:1654 '$DOCKER_CONFIG_FILE' && sudo chmod 600 '$DOCKER_CONFIG_FILE'
 Next, for each app, in its directory:
   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port <port>
 EOF
@@ -273,10 +395,15 @@ EOF
 
 # ---- app command -------------------------------------------------------------
 
+# helmo_container: "id image name" of a running Helmo container, if any.
+helmo_container() {
+    command -v docker >/dev/null 2>&1 || return 0
+    docker ps --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep " ghcr.io/${IMAGE_REPO}[:@]" | head -n 1 || true
+}
+
 # apps_dir_of_helmo: the HELMO_APPS_DIR of a running Helmo container, if any.
 apps_dir_of_helmo() {
-    command -v docker >/dev/null 2>&1 || return 0
-    cid=$(docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | grep " ghcr.io/${IMAGE_REPO}[:@]" | head -n 1 | cut -d' ' -f1) || true
+    cid=$(helmo_container | cut -d' ' -f1)
     [ -n "$cid" ] || return 0
     docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null |
         sed -n 's/^HELMO_APPS_DIR=//p' | head -n 1
@@ -358,6 +485,7 @@ cmd_app() {
             --host) [ $# -ge 2 ] || die "--host needs a value"; HOSTS="$HOSTS $2"; shift 2 ;;
             --service) [ $# -ge 2 ] || die "--service needs a value"; SERVICE=$2; shift 2 ;;
             --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
+            --traefik-api) [ $# -ge 2 ] || die "--traefik-api needs a value"; TRAEFIK_API=$2; shift 2 ;;
             --yes | -y) YES=1; shift ;;
             *) die "unknown option '$1' for app" ;;
         esac
@@ -500,6 +628,20 @@ cmd_app() {
     say ""
     first=${PORTS# }
     first=${first%% *}
+    helmo=$(helmo_container)
+    if [ -n "$helmo" ] && [ "$(traefik_mode)" = file ]; then
+        image=$(printf '%s' "$helmo" | cut -d' ' -f2)
+        ports=$(app_ports "$(dirname "$APP_DIR")")
+        say "Traefik uses the File provider: replace Helmo's routers in its dynamic configuration with"
+        say "(this adds the entrypoint of port $first):"
+        traefik_config "$image" "$ports" | sed 's/^/    /' || say "    (could not generate it; see docs/traefik.md)"
+        say ""
+    fi
+    if [ -n "$helmo" ]; then
+        say "Helmo reads the apps only when it starts; restart it to load '$app_id':"
+        say "    docker restart $(printf '%s' "$helmo" | cut -d' ' -f3)"
+        say ""
+    fi
     say "App '$app_id' is ready. Once Traefik routes port $first to it, open:"
     say "    http://<host>:$first/_helmo/"
 }
