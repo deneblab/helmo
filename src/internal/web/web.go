@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"helmo/internal/compose"
@@ -21,12 +22,16 @@ const dockerTimeout = 10 * time.Second
 type Server struct {
 	Docker  docker.DockerOps
 	Compose *compose.Manager
+
+	mu      sync.Mutex
+	streams map[string]int // open log streams per app
 }
 
 // Handler returns the panel routes, mounted under /_helmo/.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_helmo/api/status", s.status)
+	mux.HandleFunc("GET /_helmo/api/logs", s.logs)
 	mux.HandleFunc("POST /_helmo/api/{op}", s.operate)
 	return mux
 }

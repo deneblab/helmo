@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -46,7 +47,9 @@ func NewClient(host string) (*Client, error) {
 	return nil, fmt.Errorf("docker host %q: unsupported scheme %q", host, u.Scheme)
 }
 
-func (c *Client) get(ctx context.Context, path string, query url.Values) ([]byte, error) {
+// open sends a GET and returns the response with a 200 status; the caller
+// closes the body.
+func (c *Client) open(ctx context.Context, path string, query url.Values) (*http.Response, error) {
 	target := c.base + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -59,19 +62,25 @@ func (c *Client) get(ctx context.Context, path string, query url.Values) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	if err != nil {
-		return nil, err
-	}
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		msg := strings.TrimSpace(string(body))
 		if len(msg) > 200 {
 			msg = msg[:200]
 		}
 		return nil, fmt.Errorf("docker %s: %s: %s", path, resp.Status, msg)
 	}
-	return body, nil
+	return resp, nil
+}
+
+func (c *Client) get(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	resp, err := c.open(ctx, path, query)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 }
 
 func (c *Client) Ping(ctx context.Context) error {
@@ -124,4 +133,40 @@ func (c *Client) ProjectContainers(ctx context.Context, dir string) ([]Container
 		})
 	}
 	return out, nil
+}
+
+func (c *Client) isTTY(ctx context.Context, id string) (bool, error) {
+	body, err := c.get(ctx, "/"+apiVersion+"/containers/"+url.PathEscape(id)+"/json", nil)
+	if err != nil {
+		return false, err
+	}
+	var v struct {
+		Config struct{ Tty bool }
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return false, fmt.Errorf("decode container: %w", err)
+	}
+	return v.Config.Tty, nil
+}
+
+func (c *Client) StreamLogs(ctx context.Context, id string, opts LogOptions, emit func(LogLine) error) error {
+	tty, err := c.isTTY(ctx, id)
+	if err != nil {
+		return err
+	}
+	q := url.Values{
+		"stdout":     {"1"},
+		"stderr":     {"1"},
+		"timestamps": {"1"},
+		"tail":       {strconv.Itoa(opts.Tail)},
+	}
+	if opts.Follow {
+		q.Set("follow", "1")
+	}
+	resp, err := c.open(ctx, "/"+apiVersion+"/containers/"+url.PathEscape(id)+"/logs", q)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return readLogs(resp.Body, tty, emit)
 }

@@ -21,6 +21,9 @@ type DockerOps interface {
 	// ProjectContainers lists all containers (running or not) of the Compose
 	// project whose working directory is dir.
 	ProjectContainers(ctx context.Context, dir string) ([]Container, error)
+	// StreamLogs calls emit for each log line of the container with the given
+	// ID until the stream ends, ctx is cancelled or emit returns an error.
+	StreamLogs(ctx context.Context, containerID string, opts LogOptions, emit func(LogLine) error) error
 }
 
 // Container is the part of a container Helmo shows.
