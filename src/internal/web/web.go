@@ -5,10 +5,12 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
+	"helmo/internal/compose"
 	"helmo/internal/docker"
 	"helmo/internal/routing"
 )
@@ -17,13 +19,15 @@ const dockerTimeout = 10 * time.Second
 
 // Server serves the panel for whichever app the request resolved to.
 type Server struct {
-	Docker docker.DockerOps
+	Docker  docker.DockerOps
+	Compose *compose.Manager
 }
 
 // Handler returns the panel routes, mounted under /_helmo/.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_helmo/api/status", s.status)
+	mux.HandleFunc("POST /_helmo/api/{op}", s.operate)
 	return mux
 }
 
@@ -65,4 +69,36 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+type opJSON struct {
+	Op     string `json:"op"`
+	Error  string `json:"error,omitempty"`
+	Output string `json:"output,omitempty"`
+}
+
+// operate handles POST /_helmo/api/{start,stop,restart} for the resolved app.
+func (s *Server) operate(w http.ResponseWriter, r *http.Request) {
+	info, ok := routing.FromContext(r.Context())
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	op := compose.Op(r.PathValue("op"))
+	res, err := s.Compose.Do(r.Context(), info.App, op)
+
+	status, body := http.StatusOK, opJSON{Op: string(op), Output: res.Output}
+	switch {
+	case errors.Is(err, compose.ErrUnknownOp):
+		http.NotFound(w, r)
+		return
+	case errors.Is(err, compose.ErrBusy):
+		status, body = http.StatusConflict, opJSON{Op: string(op), Error: err.Error()}
+	case err != nil:
+		log.Printf("operation app=%s: %v", info.App.ID, err)
+		status, body.Error = http.StatusInternalServerError, string(op)+" failed"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
 }

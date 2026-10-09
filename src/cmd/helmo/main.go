@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"helmo/internal/compose"
 	"helmo/internal/config"
 	"helmo/internal/docker"
 	"helmo/internal/routing"
@@ -46,7 +47,10 @@ func main() {
 			log.Printf("audit app=%s identity=%s ip=%s %s %s status=%d",
 				e.AppID, e.Identity, e.ClientIP, e.Method, e.Path, e.Status)
 		},
-	}, (&web.Server{Docker: dc}).Handler())
+	}, (&web.Server{
+		Docker:  dc,
+		Compose: &compose.Manager{Runner: compose.ExecRunner{}},
+	}).Handler())
 	mux.Handle("/_helmo/", panel)
 
 	srv := &http.Server{
