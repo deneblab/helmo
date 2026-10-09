@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"helmo/internal/config"
+	"helmo/internal/routing"
 )
 
 func main() {
@@ -24,6 +25,18 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+
+	panel := routing.Middleware(routing.Options{
+		Resolver: routing.NewResolver(apps),
+		Audit: func(e routing.AuditEvent) {
+			log.Printf("audit app=%s identity=%s ip=%s %s %s status=%d",
+				e.AppID, e.Identity, e.ClientIP, e.Method, e.Path, e.Status)
+		},
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, _ := routing.FromContext(r.Context())
+		fmt.Fprintf(w, "helmo: app %s\n", info.App.ID)
+	}))
+	mux.Handle("/_helmo/", panel)
 
 	srv := &http.Server{
 		Addr:              listen,
