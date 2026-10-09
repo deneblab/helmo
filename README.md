@@ -1,5 +1,8 @@
 # Helmo
 
+[![Release](https://img.shields.io/github/v/release/deneblab/helmo?label=image)](https://github.com/deneblab/helmo/releases/latest)
+[![image](https://github.com/deneblab/helmo/actions/workflows/image.yml/badge.svg?branch=production)](https://github.com/deneblab/helmo/actions/workflows/image.yml)
+
 A small self-hosted panel for web apps that run with Docker Compose behind
 Traefik. One Helmo process serves many apps, each on its own Traefik port, and
 needs no change in the apps' code.
@@ -184,7 +187,9 @@ docker push ghcr.io/deneblab/helmo:<version>
 
 `.github/workflows/image.yml` runs the tests and builds the image on every push
 to `develop` or `production` and on pull requests. Only `production` pushes the
-image to GHCR.
+image to GHCR, and creates a GitHub release `v<version>` for it: the latest
+release (and the badge at the top) is the current image,
+`ghcr.io/deneblab/helmo:<version>`.
 
 ### Branches
 

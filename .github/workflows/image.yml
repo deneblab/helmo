@@ -35,7 +35,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # the GitHub release of a published version
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -66,3 +66,24 @@ jobs:
           push: ${{ github.ref == 'refs/heads/production' }}
           build-args: VERSION=${{ steps.version.outputs.version }}
           tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          # Links the package to this repository, so it shows on the repo page.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      # A release per published image: the repo page and the README badge show
+      # the current version. Re-running the job does not create a second one.
+      - name: Create GitHub release
+        if: github.ref == 'refs/heads/production'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "release v$VERSION exists"
+            exit 0
+          fi
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "Helmo $VERSION" \
+            --notes "Image: \`ghcr.io/${GITHUB_REPOSITORY}:$VERSION\`
+
+          Update: set \`HELMO_TAG=$VERSION\` in Helmo's \`.env\` and run \`docker compose up -d\`."
