@@ -55,9 +55,16 @@
     return digest ? `${tag} (${digest.replace('sha256:', '').slice(0, 12)})` : tag;
   }
 
-  function formatTime(iso) {
+  // formatTime shows a local time as 24-hour "YYYY-MM-DD HH:MM:SS", the same
+  // whatever the browser's language; with dateIfOld only lines that are not
+  // from today get the date.
+  function formatTime(iso, dateIfOld) {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+    if (Number.isNaN(d.getTime())) return iso;
+    const p = (n) => String(n).padStart(2, '0');
+    const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    if (dateIfOld && d.toDateString() === new Date().toDateString()) return time;
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${time}`;
   }
 
   function updateButtons() {
@@ -285,7 +292,7 @@
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     const line = el('div', 'line ' + (ev.stream === 'stderr' ? 'stderr' : 'stdout'));
     if (ev.ts) {
-      const ts = el('span', 'ts', formatLogTime(ev.ts));
+      const ts = el('span', 'ts', formatTime(ev.ts, true));
       ts.title = new Date(ev.ts).toString();
       // A real space, so a copied line does not glue the time to the text.
       line.append(ts, document.createTextNode(' '));
@@ -294,18 +301,6 @@
     box.append(line);
     while (box.childElementCount > MAX_LOG_LINES) box.firstElementChild.remove();
     if (atBottom) box.scrollTop = box.scrollHeight;
-  }
-
-  // formatLogTime shows the local time as 24-hour HH:MM:SS, with the date in
-  // front when the line is not from today (a tail can reach weeks back).
-  function formatLogTime(iso) {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const p = (n) => String(n).padStart(2, '0');
-    const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-    const now = new Date();
-    if (d.toDateString() === now.toDateString()) return time;
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${time}`;
   }
 
   function addMarker(text) {
