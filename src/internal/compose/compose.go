@@ -24,6 +24,10 @@ const (
 	OpStart   Op = "start"   // up -d: also (re)creates missing containers
 	OpStop    Op = "stop"    // stop, containers are kept
 	OpRestart Op = "restart" // restart existing containers
+
+	// Held by the deploy package while it changes versions; Do rejects them.
+	OpDeploy   Op = "deploy"
+	OpRollback Op = "rollback"
 )
 
 const (
@@ -94,19 +98,18 @@ type Outputter interface {
 // example APP_TAG is not defined yet).
 var ErrNoImage = errors.New("cannot determine the service image")
 
-// ServiceImage returns the image reference Compose resolves for service in
-// the app's project. An empty service is accepted when the project has
-// exactly one.
-func (m *Manager) ServiceImage(ctx context.Context, app config.App, service string) (string, error) {
+// ServiceImages returns service name -> image as Compose resolves them
+// (APP_TAG included). Services without an image are omitted.
+func (m *Manager) ServiceImages(ctx context.Context, app config.App) (map[string]string, error) {
 	o, ok := m.Runner.(Outputter)
 	if !ok {
-		return "", ErrNoImage
+		return nil, ErrNoImage
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out, err := o.Output(ctx, app.Dir, "config", "--format", "json")
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrNoImage, err)
+		return nil, fmt.Errorf("%w: %v", ErrNoImage, err)
 	}
 	var cfg struct {
 		Services map[string]struct {
@@ -114,24 +117,45 @@ func (m *Manager) ServiceImage(ctx context.Context, app config.App, service stri
 		} `json:"services"`
 	}
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		return "", fmt.Errorf("%w: decode compose config: %v", ErrNoImage, err)
+		return nil, fmt.Errorf("%w: decode compose config: %v", ErrNoImage, err)
+	}
+	images := map[string]string{}
+	for name, svc := range cfg.Services {
+		if svc.Image != "" {
+			images[name] = svc.Image
+		}
+	}
+	return images, nil
+}
+
+// ServiceImage returns the image reference Compose resolves for service in
+// the app's project. An empty service is accepted when the project has
+// exactly one.
+func (m *Manager) ServiceImage(ctx context.Context, app config.App, service string) (string, error) {
+	_, img, err := m.ResolveService(ctx, app, service)
+	return img, err
+}
+
+// ResolveService returns the name and image of the service to version. An
+// empty service is accepted when the project has exactly one.
+func (m *Manager) ResolveService(ctx context.Context, app config.App, service string) (name, image string, err error) {
+	images, err := m.ServiceImages(ctx, app)
+	if err != nil {
+		return "", "", err
 	}
 	if service == "" {
-		if len(cfg.Services) != 1 {
-			return "", fmt.Errorf("%w: several services, set service in app.yaml", ErrNoImage)
+		if len(images) != 1 {
+			return "", "", fmt.Errorf("%w: several services, set service in app.yaml", ErrNoImage)
 		}
-		for _, v := range cfg.Services {
-			if v.Image == "" {
-				return "", fmt.Errorf("%w: service has no image", ErrNoImage)
-			}
-			return v.Image, nil
+		for n, img := range images {
+			return n, img, nil
 		}
 	}
-	svc, found := cfg.Services[service]
-	if !found || svc.Image == "" {
-		return "", fmt.Errorf("%w: service %q has no image", ErrNoImage, service)
+	img, ok := images[service]
+	if !ok {
+		return "", "", fmt.Errorf("%w: service %q has no image", ErrNoImage, service)
 	}
-	return svc.Image, nil
+	return service, img, nil
 }
 
 // envFileArgs makes Compose read the app's .env and .helmo/env explicitly.
@@ -184,6 +208,25 @@ func (m *Manager) Do(ctx context.Context, app config.App, op Op) (Result, error)
 		return res, fmt.Errorf("%s %s: %w", op, app.ID, err)
 	}
 	return res, nil
+}
+
+// Acquire reserves the app for a long operation run by another package
+// (deploy, rollback). The caller must call release exactly once.
+func (m *Manager) Acquire(appID string, op Op) (release func(), err error) {
+	if !m.acquire(appID, op) {
+		return nil, ErrBusy
+	}
+	return func() { m.release(appID) }, nil
+}
+
+// Exec runs docker compose in the app directory without taking the lock;
+// callers hold it through Acquire.
+func (m *Manager) Exec(ctx context.Context, app config.App, args ...string) (string, error) {
+	out, err := m.Runner.Run(ctx, app.Dir, args...)
+	if err != nil {
+		return tail(out), fmt.Errorf("compose %s: %w", args[0], err)
+	}
+	return tail(out), nil
 }
 
 // Busy reports the operation currently running for the app, if any.

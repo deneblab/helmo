@@ -23,6 +23,10 @@ const (
 // without ever containing a secret.
 var ErrUnauthorized = errors.New("registry authentication failed")
 
+// ErrNotFound means the repository or reference does not exist (or the
+// credentials cannot see it).
+var ErrNotFound = errors.New("not found")
+
 // Client talks to registries. Zero value works (no credentials).
 type Client struct {
 	HTTP *http.Client
@@ -140,7 +144,7 @@ func (c *Client) do(ctx context.Context, ref Ref, method, target, accept string)
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return nil, c.denied(ref)
 		case http.StatusNotFound:
-			return nil, fmt.Errorf("%s: not found (repository missing or no access)", ref.Name())
+			return nil, fmt.Errorf("%s: %w (repository or tag missing, or no access)", ref.Name(), ErrNotFound)
 		}
 		return nil, fmt.Errorf("%s: registry answered %s", ref.Name(), resp.Status)
 	}

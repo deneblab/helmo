@@ -203,3 +203,9 @@ func TestLogsStreamLimit(t *testing.T) {
 	}
 	waitFor(t, "slots released", func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.streams) == 0 })
 }
+
+func routingFor(apps []config.App, s *Server) http.Handler {
+	return routing.Middleware(routing.Options{Resolver: routing.NewResolver(apps)}, s.Handler())
+}
+
+func newRecorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }

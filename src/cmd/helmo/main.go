@@ -11,6 +11,7 @@ import (
 
 	"helmo/internal/compose"
 	"helmo/internal/config"
+	"helmo/internal/deploy"
 	"helmo/internal/docker"
 	"helmo/internal/registry"
 	"helmo/internal/routing"
@@ -49,6 +50,10 @@ func main() {
 		fmt.Fprintln(w, "ok")
 	})
 
+	// one Manager, so deploys and start/stop share the per-app lock
+	cm := &compose.Manager{Runner: compose.ExecRunner{}}
+	reg := registry.Source{ConfigPath: dockerConfigPath()}
+
 	panel := routing.Middleware(routing.Options{
 		Resolver: routing.NewResolver(apps),
 		Audit: func(e routing.AuditEvent) {
@@ -57,8 +62,9 @@ func main() {
 		},
 	}, (&web.Server{
 		Docker:   dc,
-		Compose:  &compose.Manager{Runner: compose.ExecRunner{}},
-		Registry: registry.Source{ConfigPath: dockerConfigPath()},
+		Compose:  cm,
+		Registry: reg,
+		Deployer: &deploy.Deployer{Compose: cm, Docker: dc, Registry: reg},
 	}).Handler())
 	mux.Handle("/_helmo/", panel)
 

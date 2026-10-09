@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"helmo/internal/compose"
+	"helmo/internal/deploy"
 	"helmo/internal/docker"
 	"helmo/internal/routing"
 )
@@ -23,6 +24,7 @@ type Server struct {
 	Docker   docker.DockerOps
 	Compose  *compose.Manager
 	Registry TagSource
+	Deployer *deploy.Deployer
 
 	mu      sync.Mutex
 	streams map[string]int // open log streams per app
@@ -34,6 +36,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /_helmo/api/status", s.status)
 	mux.HandleFunc("GET /_helmo/api/logs", s.logs)
 	mux.HandleFunc("GET /_helmo/api/versions", s.versions)
+	mux.HandleFunc("POST /_helmo/api/deploy", s.deploy)
+	mux.HandleFunc("POST /_helmo/api/rollback", s.rollback)
+	mux.HandleFunc("GET /_helmo/api/deploy", s.deployStatus)
+	mux.HandleFunc("GET /_helmo/api/history", s.history)
 	mux.HandleFunc("POST /_helmo/api/{op}", s.operate)
 	return mux
 }
