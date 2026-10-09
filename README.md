@@ -43,14 +43,39 @@ browser ──► Traefik (one entrypoint per app port) ──► the app       
 
 ## Quick start
 
-1. Prepare each app, see [docs/app-setup.md](docs/app-setup.md): a
-   `.helmo/app.yaml`, an image reference using `${APP_TAG}`, and ownership of
-   `.helmo` by the user Helmo runs as (UID 1654 in the example).
-2. Configure Traefik, see [docs/traefik.md](docs/traefik.md).
-3. Run Helmo with [compose.example.yaml](compose.example.yaml). It needs the
-   Docker socket, `/srv/apps` mounted at the same path, and the registry
-   credentials file.
-4. Open `http://<host>:<app port>/_helmo/`.
+Needs Docker with the Compose plugin, `curl`, and a running Traefik that is set up
+as in [docs/traefik.md](docs/traefik.md).
+
+1. Install Helmo in a directory of your choice; the script works in the current one:
+
+   ```sh
+   mkdir -p /srv/helmo && cd /srv/helmo
+   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- helmo
+   ```
+
+   It finds the newest image version, asks for the apps directory (default
+   `/srv/apps`), writes `compose.yaml` and `.env` here and starts Helmo. Pass
+   `--version X.Y.Z`, `--apps-dir DIR`, `--network NAME` and `--yes` to skip the
+   questions.
+
+2. Prepare each app, in its own directory:
+
+   ```sh
+   cd /srv/apps/cadastro
+   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
+   ```
+
+   It writes `.helmo/app.yaml`, tells you what to change in the app's Compose
+   file (it never edits it) and how to give Helmo ownership of `.helmo`. Details
+   and the manual steps are in [docs/app-setup.md](docs/app-setup.md).
+
+3. Open `http://<host>:<app port>/_helmo/`.
+
+The script is not tied to a release: it is read from the `production` branch,
+whose every commit is a release. To install from a fixed version of the script,
+replace `production` in the URL with a commit hash. The script writes only
+Helmo's own files and asks before it overwrites one that differs; with `--yes` it
+keeps the existing file. Read it before you run it, as with any `curl | sh`.
 
 ## Configuration
 

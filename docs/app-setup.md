@@ -14,6 +14,23 @@ The directory name is the app id and must match `^[a-z0-9-]+$`.
     dc                Helmo writes this: wrapper for manual commands
 ```
 
+## Quick way: the script
+
+In the app directory:
+
+```sh
+cd /srv/apps/cadastro
+curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
+```
+
+Options: `--port N` (repeat for more ports), `--host NAME` (repeatable),
+`--service NAME`, `--apps-dir DIR`, `--yes`. The script does steps 2 and 3 below,
+checks that no other app uses the port, and for step 1 only tells you what to
+change, because the Compose file is yours. When the file has a single image with a
+tag such as `v1.2.3` it also does step 4 with that tag. It is safe to run again.
+
+The rest of this page is what the script does, step by step.
+
 ## 1. Use `APP_TAG` in the Compose file
 
 The image of the service Helmo versions must take its tag from `APP_TAG`:

@@ -26,7 +26,8 @@ The ports you list in each `.helmo/app.yaml` must match these entrypoints.
 
 ## The global router
 
-Helmo carries the labels itself ([compose.example.yaml](../compose.example.yaml)):
+Helmo carries the labels itself ([compose.example.yaml](../compose.example.yaml)); the
+install script writes the same file and prints a reminder, but does not touch Traefik:
 
 ```yaml
 traefik.enable: "true"
