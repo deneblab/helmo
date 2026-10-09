@@ -25,6 +25,12 @@ func main() {
 	}
 	log.Printf("loaded %d app(s) from %s", len(apps), appsDir)
 
+	for _, a := range apps {
+		if err := compose.EnsureWrapper(a.Dir); err != nil {
+			log.Printf("warning: app %s: %v", a.ID, err)
+		}
+	}
+
 	dockerHost := env("DOCKER_HOST", "unix:///var/run/docker.sock")
 	dc, err := docker.NewClient(dockerHost)
 	if err != nil {
