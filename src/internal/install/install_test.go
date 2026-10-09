@@ -450,7 +450,38 @@ func TestAppSuggestsTheExactImageLine(t *testing.T) {
 	if !strings.Contains(out, want) {
 		t.Errorf("output lacks %q:\n%s", want, out)
 	}
-	if !strings.Contains(out, "not latest") {
-		t.Errorf("no warning about latest:\n%s", out)
+}
+
+// The app runs (with a tag taken from its own variable, here "latest"): the
+// script pins the starting version to the digest of the running image, and
+// warns about a registry reachable only over plain HTTP.
+func TestAppReadsRunningVersion(t *testing.T) {
+	e := newEnv(t)
+	e.stub("docker", `#!/bin/sh
+case "$1 $2" in
+	"ps --filter") echo "c1 web" ;;
+	"inspect -f")
+		case "$3" in
+			*Config.Image*) echo "registry.example:5000/app:latest" ;;
+			*) echo "sha256:img" ;;
+		esac ;;
+	"image inspect") printf 'registry.example:5000/app@sha256:abc123\n' ;;
+esac
+exit 0
+`)
+	e.stub("curl", `#!/bin/sh
+case "$*" in
+	*https://registry.example:5000/*) exit 35 ;;
+	*http://registry.example:5000/*) exit 0 ;;
+	*) exit 1 ;;
+esac
+`)
+	d := e.app("extraction", "services:\n  web:\n    image: ${IMG:-registry.example:5000/app}:${IMG_TAG:-latest}\n")
+	out := e.mustRun(d, "app", "--port", "8102")
+	if got := e.read(filepath.Join(d, ".helmo", "env")); got != "APP_TAG=latest@sha256:abc123\n" {
+		t.Errorf(".helmo/env = %q\n%s", got, out)
+	}
+	if !strings.Contains(out, "answers only over plain HTTP") {
+		t.Errorf("no plain-HTTP warning:\n%s", out)
 	}
 }

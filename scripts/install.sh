@@ -294,6 +294,54 @@ ports_of_other_apps() {
     done
 }
 
+# app_containers: "id service" of the running containers of the Compose project here.
+app_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+    for wd in "$(pwd)" "$APP_DIR"; do
+        docker ps --filter "label=com.docker.compose.project.working_dir=$wd" \
+            --format '{{.ID}} {{.Label "com.docker.compose.service"}}' 2>/dev/null || true
+    done | sort -u
+}
+
+# running_ref SERVICE: the image reference the running container of SERVICE was created from.
+running_ref() {
+    cid=$(app_containers | awk -v s="$1" '$2 == s { print $1; exit }')
+    [ -n "$cid" ] || return 0
+    docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true
+}
+
+# running_version SERVICE: tag@digest of the image the running container of SERVICE uses.
+running_version() {
+    cid=$(app_containers | awk -v s="$1" '$2 == s { print $1; exit }')
+    [ -n "$cid" ] || return 0
+    ref=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null) || return 0
+    img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null) || return 0
+    name=${ref%@*}
+    case ${name##*/} in
+        *:*) tag=${name##*:}; repo=${name%:*} ;;
+        *) tag=latest; repo=$name ;;
+    esac
+    digests=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$img" 2>/dev/null || true)
+    digest=$(printf '%s\n' "$digests" | grep -F "$repo@" | head -n 1 | cut -d@ -f2)
+    [ -n "$digest" ] || digest=$(printf '%s\n' "$digests" | grep @ | head -n 1 | cut -d@ -f2)
+    safe "$tag" tag
+    printf '%s' "$tag${digest:+@$digest}"
+}
+
+# check_registry REF: warn when the registry of REF answers only over plain HTTP.
+check_registry() {
+    host=${1%%/*}
+    case $1 in */*) ;; *) return 0 ;; esac
+    case $host in *.* | *:* | localhost) ;; *) return 0 ;; esac
+    command -v curl >/dev/null 2>&1 || return 0
+    curl -s -o /dev/null -m 5 "https://$host/v2/" && return 0
+    if curl -s -o /dev/null -m 5 "http://$host/v2/"; then
+        say ""
+        say "warning: the registry $host answers only over plain HTTP. Helmo talks to registries"
+        say "over HTTPS, so it cannot list versions there yet."
+    fi
+}
+
 join_list() {
     out=
     for item in "$@"; do out=${out:+$out, }$item; done
@@ -396,22 +444,44 @@ cmd_app() {
             say "Image lines:"
             grep -n '^[[:space:]]*image:' "$compose" | sed 's/^/    /' || true
         fi
-        say "APP_TAG must be a real version (such as 1.2.3 or v1.2.3), not latest."
     fi
 
-    # The version that runs now, so Compose can resolve APP_TAG before the first deployment.
+    # The service Helmo versions: --service, or the only one running here.
+    svc=$SERVICE
+    if [ -z "$svc" ]; then
+        services=$(app_containers | awk '{ print $2 }' | sort -u)
+        [ "$(printf '%s\n' "$services" | grep -c .)" != 1 ] || svc=$services
+    fi
+
+    # The version that runs now, so Compose can resolve APP_TAG before the first
+    # deployment. Pinned to the digest, so a rollback returns to exactly this image.
     if [ ! -f .helmo/env ]; then
-        if [ "$count" = 1 ] && [ "$todo" = 1 ]; then
+        current=
+        [ -z "$svc" ] || current=$(running_version "$svc")
+        if [ -n "$current" ]; then
+            say "the running '$svc' container uses $current"
+            printf 'APP_TAG=%s\n' "$current" | write_file .helmo/env
+        elif [ "$count" = 1 ] && [ "$todo" = 1 ]; then
             last=${images##*/}
             case $last in
                 *:[0-9]*.[0-9]*.[0-9]* | *:v[0-9]*.[0-9]*.[0-9]*)
-                    tag=${last##*:}
-                    printf 'APP_TAG=%s\n' "$tag" | write_file .helmo/env
+                    printf 'APP_TAG=%s\n' "${last##*:}" | write_file .helmo/env
                     ;;
             esac
         fi
-        [ -f .helmo/env ] || say "Set the version that runs now: echo 'APP_TAG=<tag>' > .helmo/env"
+        if [ ! -f .helmo/env ]; then
+            say "Set the version that runs now: echo 'APP_TAG=<tag>' > .helmo/env"
+            [ -n "$svc" ] || [ -z "$(app_containers)" ] ||
+                say "(several services are running; pass --service NAME to read it from the container)"
+        fi
     fi
+
+    ref=
+    [ -z "$svc" ] || ref=$(running_ref "$svc")
+    if [ -z "$ref" ] && [ "$count" = 1 ]; then
+        case $images in *'$'*) ;; *) ref=$images ;; esac
+    fi
+    [ -z "$ref" ] || check_registry "$ref"
 
     if [ "$(id -u)" = 0 ]; then
         chown -R 1654:1654 .helmo

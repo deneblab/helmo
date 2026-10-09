@@ -26,8 +26,11 @@ Options: `--port N` (repeat for more ports; when omitted, the script lists the p
 Traefik publishes that no other app uses, and a single free one is the default), `--host NAME` (repeatable),
 `--service NAME`, `--apps-dir DIR`, `--yes`. The script does steps 2 and 3 below,
 checks that no other app uses the port, and for step 1 only tells you what to
-change, because the Compose file is yours. When the file has a single image with a
-tag such as `v1.2.3` it also does step 4 with that tag. It is safe to run again.
+change, because the Compose file is yours. It also does step 4: when the app is running it
+writes the tag and digest of the running image (for example
+`latest@sha256:…`), otherwise a literal tag such as `v1.2.3` from the Compose file.
+It warns when the registry answers only over plain HTTP, which Helmo does not
+support yet. It is safe to run again.
 
 The rest of this page is what the script does, step by step.
 
