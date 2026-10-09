@@ -23,6 +23,8 @@ jobs:
         with:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
+      - name: Lint shell scripts
+        run: shellcheck -s sh scripts/*.sh
       - name: Vet and test
         working-directory: src
         run: |

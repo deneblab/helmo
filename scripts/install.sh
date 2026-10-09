@@ -1,0 +1,392 @@
+#!/bin/sh
+# Installs Helmo, or prepares an app for it. Works in the current directory.
+#
+#   mkdir -p /srv/helmo && cd /srv/helmo
+#   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- helmo
+#
+#   helmo [options]    write compose.yaml and .env here and start Helmo
+#   app [options]      prepare the app in this directory (cd /srv/apps/<id> first)
+#
+# Options for helmo:
+#   --version X.Y.Z    image version (default: the newest in ghcr.io/deneblab/helmo)
+#   --apps-dir DIR     directory with one subdirectory per app (default /srv/apps)
+#   --network NAME     Docker network Traefik reaches its backends on (default traefik)
+#   --yes              ask nothing: use the defaults and keep files that already exist
+#
+# Options for app:
+#   --port N           Traefik port of the app (required, may be given more than once)
+#   --host NAME        accept only this host name (may be given more than once)
+#   --service NAME     the Compose service Helmo versions (needed with several services)
+#   --apps-dir DIR     the apps directory of Helmo, to check where this app lives
+#   --yes              ask nothing and keep files that already exist
+#
+# It writes only the files of Helmo itself; Traefik and your apps are not changed.
+set -eu
+
+IMAGE_REPO=deneblab/helmo
+SOCKET=/var/run/docker.sock
+
+YES=0
+VERSION=${HELMO_TAG:-}
+APPS_DIR=
+NETWORK=
+DOCKER_GID=
+DOCKER_CONFIG_FILE=
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+have_tty() { ( : </dev/tty ) 2>/dev/null; }
+
+# ask PROMPT DEFAULT: prints the answer (or the default) on stdout.
+ask() {
+    if [ "$YES" = 1 ]; then
+        printf '%s' "$2"
+        return
+    fi
+    have_tty || die "no terminal to ask '$1'; pass the options or --yes"
+    printf '%s [%s]: ' "$1" "$2" >/dev/tty
+    read -r answer </dev/tty || answer=
+    printf '%s' "${answer:-$2}"
+}
+
+# confirm PROMPT: succeeds when the user agrees; --yes means no.
+confirm() {
+    [ "$YES" = 1 ] && return 1
+    have_tty || return 1
+    printf '%s [y/N]: ' "$1" >/dev/tty
+    read -r answer </dev/tty || answer=
+    case $answer in y | Y | yes) return 0 ;; *) return 1 ;; esac
+}
+
+# safe VALUE NAME: values end up in .env and compose.yaml unquoted.
+safe() {
+    case $1 in
+        '' | *[!A-Za-z0-9._/:@-]*) die "$2 must be non-empty and contain only letters, digits and . _ / : @ -" ;;
+    esac
+}
+
+# ---- version -----------------------------------------------------------------
+
+newest_version() {
+    token=$(curl -fsSL "https://ghcr.io/token?scope=repository:$IMAGE_REPO:pull" |
+        sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p') || return 1
+    [ -n "$token" ] || return 1
+    curl -fsSL -H "Authorization: Bearer $token" "https://ghcr.io/v2/$IMAGE_REPO/tags/list?n=1000" |
+        grep -o '"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"' | tr -d '"' |
+        sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1
+}
+
+resolve_version() {
+    if [ -z "$VERSION" ]; then
+        VERSION=$(newest_version 2>/dev/null || true)
+        [ -n "$VERSION" ] || die "cannot find the newest version in ghcr.io/$IMAGE_REPO; pass --version X.Y.Z"
+        say "newest version: $VERSION"
+    fi
+    case $VERSION in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) die "version must look like 1.2.3, got '$VERSION'" ;;
+    esac
+    safe "$VERSION" version
+}
+
+# ---- files -------------------------------------------------------------------
+
+# write_file NAME: stores stdin as NAME; an existing different file is replaced
+# only when the user agrees.
+write_file() {
+    tmp=$(mktemp)
+    cat >"$tmp"
+    if [ -f "$1" ]; then
+        if cmp -s "$tmp" "$1"; then
+            say "$1: up to date"
+            rm -f "$tmp"
+            return
+        fi
+        say "$1 already exists and differs:"
+        diff -u "$1" "$tmp" || true
+        if ! confirm "Overwrite $1?"; then
+            say "$1: kept as it is"
+            rm -f "$tmp"
+            return
+        fi
+    fi
+    cat "$tmp" >"$1"
+    rm -f "$tmp"
+    say "$1: written"
+}
+
+compose_yaml() {
+    cat <<EOF
+# Helmo. Settings live in .env next to this file. Helmo does not update
+# itself: change HELMO_TAG there and run: docker compose up -d
+
+services:
+  helmo:
+    image: ghcr.io/$IMAGE_REPO:\${HELMO_TAG:?set HELMO_TAG to an image version}
+    restart: unless-stopped
+    user: "1654:1654"            # owner of $APPS_DIR/*/.helmo
+    group_add:
+      - "\${DOCKER_GID:?set DOCKER_GID}"
+    stop_grace_period: 30s
+    # Idle Helmo uses about 10 MB. While deploying it also runs docker compose,
+    # and child processes count against this limit.
+    mem_limit: 128m
+    environment:
+      HELMO_APPS_DIR: $APPS_DIR
+      HELMO_LISTEN: ":8080"
+    volumes:
+      # Same path inside and on the host: Compose resolves relative paths of
+      # the apps in the CLI, and the Docker daemon needs the host paths.
+      - $APPS_DIR:$APPS_DIR
+      - $SOCKET:/var/run/docker.sock
+      - \${DOCKER_CONFIG_FILE:?set DOCKER_CONFIG_FILE}:/docker-config/config.json:ro
+    networks: [traefik]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: \${TRAEFIK_NETWORK:-traefik}
+      # One router for every app: any host, any entrypoint (no entryPoints
+      # label), ahead of the apps' own routers. Do NOT publish port 8080.
+      traefik.http.routers.helmo.rule: PathPrefix(\`/_helmo\`)
+      traefik.http.routers.helmo.priority: "10000"
+      traefik.http.routers.helmo.service: helmo
+      traefik.http.services.helmo.loadbalancer.server.port: "8080"
+
+networks:
+  traefik:
+    name: \${TRAEFIK_NETWORK:-traefik}
+    external: true
+EOF
+}
+
+env_file() {
+    cat <<EOF
+HELMO_TAG=$VERSION
+DOCKER_GID=$DOCKER_GID
+DOCKER_CONFIG_FILE=$DOCKER_CONFIG_FILE
+TRAEFIK_NETWORK=$NETWORK
+EOF
+}
+
+# ---- helmo command -----------------------------------------------------------
+
+detect_docker_gid() {
+    gid=$(stat -c %g "$SOCKET" 2>/dev/null || true)
+    [ -n "$gid" ] || gid=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
+    printf '%s' "$gid"
+}
+
+cmd_helmo() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION=$2; shift 2 ;;
+            --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
+            --network) [ $# -ge 2 ] || die "--network needs a value"; NETWORK=$2; shift 2 ;;
+            --yes | -y) YES=1; shift ;;
+            *) die "unknown option '$1' for helmo" ;;
+        esac
+    done
+
+    command -v docker >/dev/null 2>&1 || die "docker is not installed"
+    docker version >/dev/null 2>&1 || die "cannot talk to Docker; is it running and are you allowed to use it?"
+    docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is missing ('docker compose version' fails)"
+    command -v curl >/dev/null 2>&1 || [ -n "$VERSION" ] || die "curl is needed to find the newest version; pass --version"
+
+    resolve_version
+
+    [ -n "$APPS_DIR" ] || APPS_DIR=$(ask "Directory with the apps" /srv/apps) || exit 1
+    case $APPS_DIR in /*) ;; *) die "the apps directory must be an absolute path, got '$APPS_DIR'" ;; esac
+    safe "$APPS_DIR" "the apps directory"
+
+    [ -n "$NETWORK" ] || NETWORK=$(ask "Docker network of Traefik" traefik) || exit 1
+    safe "$NETWORK" "the network name"
+    docker network inspect "$NETWORK" >/dev/null 2>&1 ||
+        die "the Docker network '$NETWORK' does not exist; create it, or use the one Traefik is on (--network)"
+
+    DOCKER_GID=$(detect_docker_gid)
+    if [ -z "$DOCKER_GID" ]; then
+        DOCKER_GID=$(ask "Group id of $SOCKET" "") || exit 1
+    fi
+    case $DOCKER_GID in '' | *[!0-9]*) die "cannot determine the group id of the Docker socket; check $SOCKET" ;; esac
+
+    DOCKER_CONFIG_FILE=${DOCKER_CONFIG:-$HOME/.docker}/config.json
+    if [ ! -f "$DOCKER_CONFIG_FILE" ]; then
+        # Compose would create a directory for a missing file; use an empty one.
+        DOCKER_CONFIG_FILE=$(pwd)/docker-config.json
+        [ -f "$DOCKER_CONFIG_FILE" ] || printf '{}\n' >"$DOCKER_CONFIG_FILE"
+        say "no Docker credentials found, using an empty $DOCKER_CONFIG_FILE (public images only)"
+    fi
+    safe "$DOCKER_CONFIG_FILE" "the path of config.json"
+
+    mkdir -p "$APPS_DIR" 2>/dev/null || die "cannot create $APPS_DIR; create it first (sudo mkdir -p $APPS_DIR)"
+
+    compose_yaml | write_file compose.yaml
+    env_file | write_file .env
+
+    say "starting Helmo (version from .env)"
+    docker compose up -d
+    docker compose ps
+
+    cat <<EOF
+
+Helmo is running. Not changed by this script, your part:
+  - Traefik must read Docker labels and use the network '$NETWORK'; the labels in
+    compose.yaml add one router, PathPrefix(\`/_helmo\`) on every entrypoint.
+  - Port 8080 of Helmo must not be published.
+Next, for each app, in its directory:
+  curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port <port>
+EOF
+}
+
+# ---- app command -------------------------------------------------------------
+
+# apps_dir_of_helmo: the HELMO_APPS_DIR of a running Helmo container, if any.
+apps_dir_of_helmo() {
+    command -v docker >/dev/null 2>&1 || return 0
+    cid=$(docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | grep " ghcr.io/${IMAGE_REPO}[:@]" | head -n 1 | cut -d' ' -f1) || true
+    [ -n "$cid" ] || return 0
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null |
+        sed -n 's/^HELMO_APPS_DIR=//p' | head -n 1
+}
+
+# ports_of_other_apps: "port app" lines for the sibling apps.
+ports_of_other_apps() {
+    for f in ../*/.helmo/app.yaml; do
+        [ -f "$f" ] || continue
+        dir=$(cd "$(dirname "$f")/.." && pwd -P)
+        [ "$dir" = "$APP_DIR" ] && continue
+        for p in $(sed -n 's/^ports:[[:space:]]*\[\(.*\)\].*/\1/p' "$f" | tr ',' ' '); do
+            echo "$p $(basename "$dir")"
+        done
+    done
+}
+
+join_list() {
+    out=
+    for item in "$@"; do out=${out:+$out, }$item; done
+    printf '%s' "$out"
+}
+
+cmd_app() {
+    PORTS=
+    HOSTS=
+    SERVICE=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --port) [ $# -ge 2 ] || die "--port needs a value"; PORTS="$PORTS $2"; shift 2 ;;
+            --host) [ $# -ge 2 ] || die "--host needs a value"; HOSTS="$HOSTS $2"; shift 2 ;;
+            --service) [ $# -ge 2 ] || die "--service needs a value"; SERVICE=$2; shift 2 ;;
+            --apps-dir) [ $# -ge 2 ] || die "--apps-dir needs a value"; APPS_DIR=$2; shift 2 ;;
+            --yes | -y) YES=1; shift ;;
+            *) die "unknown option '$1' for app" ;;
+        esac
+    done
+
+    APP_DIR=$(pwd -P)
+    app_id=$(basename "$APP_DIR")
+    case $app_id in '' | *[!a-z0-9-]*) die "the directory name '$app_id' is the app id and must match ^[a-z0-9-]+\$; rename it" ;; esac
+
+    compose=
+    for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+        [ -f "$f" ] && { compose=$f; break; }
+    done
+    [ -n "$compose" ] || die "no Compose file in $APP_DIR; run this in the directory of the app"
+
+    if [ -z "$PORTS" ]; then
+        PORTS=$(ask "Traefik port of the app" "") || exit 1
+    fi
+    for port in $PORTS; do
+        case $port in '' | *[!0-9]*) die "port '$port' is not a number" ;; esac
+        if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then die "port $port is out of range"; fi
+    done
+    [ -n "$PORTS" ] || die "give the Traefik port of the app: --port N"
+    for host in $HOSTS; do safe "$host" "host"; done
+    [ -z "$SERVICE" ] || safe "$SERVICE" "the service name"
+
+    # shellcheck disable=SC2086
+    set -- $PORTS
+    for port in "$@"; do
+        n=0
+        for q in "$@"; do [ "$q" = "$port" ] && n=$((n + 1)); done
+        [ "$n" = 1 ] || die "port $port is given twice"
+    done
+    other=$(ports_of_other_apps | awk -v p="$PORTS" 'BEGIN { n = split(p, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } want[$1] { print $1 " (app " $2 ")" }')
+    [ -z "$other" ] || die "port already used by another app: $(printf '%s' "$other" | tr '\n' ' ')"
+
+    mkdir -p .helmo 2>/dev/null || die "cannot create $APP_DIR/.helmo; create it first (sudo mkdir -p '$APP_DIR/.helmo')"
+
+    {
+        echo "enabled: true"
+        # shellcheck disable=SC2086
+        echo "ports: [$(join_list $PORTS)]"
+        # shellcheck disable=SC2086
+        [ -z "$HOSTS" ] || echo "hosts: [$(join_list $HOSTS)]"
+        [ -z "$SERVICE" ] || echo "service: $SERVICE"
+    } | write_file .helmo/app.yaml
+
+    # The image must take its tag from APP_TAG. The compose file stays yours.
+    images=$(sed -n 's/^[[:space:]]*image:[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'[:space:]#]*\).*/\1/p' "$compose")
+    count=$(printf '%s\n' "$images" | grep -c . || true)
+    todo=0
+    # shellcheck disable=SC2016 # a literal ${APP_TAG, not an expansion
+    if printf '%s\n' "$images" | grep -q '\${APP_TAG'; then
+        say "$compose: the image already uses APP_TAG"
+    else
+        todo=1
+    fi
+
+    if [ "$todo" = 1 ]; then
+        say ""
+        say "$compose: the image of the versioned service must take its tag from APP_TAG."
+        say "Change that service's line to (the script does not edit your file):"
+        # shellcheck disable=SC2016 # literal text for the user to copy
+        say '    image: <image>:${APP_TAG:?use .helmo/dc instead of docker compose}'
+        say "Current image lines:"
+        grep -n '^[[:space:]]*image:' "$compose" | sed 's/^/    /' || true
+    fi
+
+    # The version that runs now, so Compose can resolve APP_TAG before the first deployment.
+    if [ ! -f .helmo/env ]; then
+        if [ "$count" = 1 ] && [ "$todo" = 1 ]; then
+            last=${images##*/}
+            case $last in
+                *:[0-9]*.[0-9]*.[0-9]* | *:v[0-9]*.[0-9]*.[0-9]*)
+                    tag=${last##*:}
+                    printf 'APP_TAG=%s\n' "$tag" | write_file .helmo/env
+                    ;;
+            esac
+        fi
+        [ -f .helmo/env ] || say "Set the version that runs now: echo 'APP_TAG=<tag>' > .helmo/env"
+    fi
+
+    if [ "$(id -u)" = 0 ]; then
+        chown -R 1654:1654 .helmo
+    elif [ "$(stat -c %u .helmo 2>/dev/null || echo 0)" != 1654 ]; then
+        say ""
+        say "Helmo runs as UID 1654 and must own .helmo; run:"
+        say "    sudo chown -R 1654:1654 '$APP_DIR/.helmo'"
+    fi
+
+    [ -n "$APPS_DIR" ] || APPS_DIR=$(apps_dir_of_helmo)
+    if [ -n "$APPS_DIR" ] && [ "$(dirname "$APP_DIR")" != "$(cd "$APPS_DIR" 2>/dev/null && pwd -P)" ]; then
+        say ""
+        say "warning: Helmo manages $APPS_DIR, but this app is in $(dirname "$APP_DIR"); Helmo will not see it."
+    fi
+
+    say ""
+    first=${PORTS# }
+    first=${first%% *}
+    say "App '$app_id' is ready. Once Traefik routes port $first to it, open:"
+    say "    http://<host>:$first/_helmo/"
+}
+
+# ---- main --------------------------------------------------------------------
+
+[ $# -ge 1 ] || die "usage: install.sh helmo|app [options]"
+cmd=$1
+shift
+case $cmd in
+    helmo) cmd_helmo "$@" ;;
+    app) cmd_app "$@" ;;
+    *) die "unknown command '$cmd' (use: helmo, app)" ;;
+esac
