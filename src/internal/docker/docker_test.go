@@ -151,3 +151,57 @@ func TestFake(t *testing.T) {
 		t.Fatal("fake lookup")
 	}
 }
+
+func TestNegotiate(t *testing.T) {
+	tests := []struct {
+		daemon, min, want string
+		ok                bool
+	}{
+		{"1.51", "1.44", maxAPIVersion, true}, // newer daemon: ours
+		{"1.41", "1.12", "1.41", true},        // older daemon: its own
+		{"1.60", "1.50", "1.50", true},        // our version already dropped
+		{"1.47", "", "1.47", true},
+		{"", "1.24", "", false},
+		{"x", "1.24", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := negotiate(tt.daemon, tt.min)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("negotiate(%q, %q) = %q, %v; want %q, %v", tt.daemon, tt.min, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+// A daemon like Docker 29 refuses API versions below 1.44. The client must
+// ask /version (without a prefix) and use a version the daemon accepts.
+func TestClientNegotiatesAPIVersion(t *testing.T) {
+	var versionCalls int
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version" {
+			versionCalls++
+			w.Write([]byte(`{"Version":"29.0.4","ApiVersion":"1.44","MinAPIVersion":"1.44"}`))
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "/v1.44/") {
+			http.Error(w, `{"message":"client version is too old"}`, http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(listFixture))
+	}))
+	defer srv.Close()
+
+	c, _ := NewClient("tcp://" + strings.TrimPrefix(srv.URL, "http://"))
+	for i := 0; i < 2; i++ {
+		if _, err := c.ProjectContainers(context.Background(), "/srv/apps/cadastro"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if versionCalls != 1 {
+		t.Errorf("/version asked %d times, want once", versionCalls)
+	}
+	if len(paths) != 2 || paths[0] != "/v1.44/containers/json" {
+		t.Errorf("paths: %v", paths)
+	}
+}

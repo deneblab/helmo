@@ -10,11 +10,15 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
-	apiVersion   = "v1.41"
-	maxBodyBytes = 16 << 20
+	// maxAPIVersion is the newest Engine API version this client asks for.
+	// The version in use is negotiated with the daemon: daemons drop old
+	// versions (Docker 29 accepts 1.44 and newer), so none is fixed here.
+	maxAPIVersion = "1.47"
+	maxBodyBytes  = 16 << 20
 )
 
 // Client is a minimal Docker Engine API client over a unix socket or TCP
@@ -23,6 +27,9 @@ const (
 type Client struct {
 	http *http.Client
 	base string
+
+	mu      sync.Mutex
+	version string // negotiated API version such as "1.47"; empty until known
 }
 
 // NewClient accepts unix:///path/to.sock, tcp://host:port or http://host:port.
@@ -83,6 +90,75 @@ func (c *Client) get(ctx context.Context, path string, query url.Values) ([]byte
 	return io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 }
 
+// api returns path under the negotiated API version, e.g. /v1.47/containers/json.
+func (c *Client) api(ctx context.Context, path string) string {
+	return "/v" + c.apiVersion(ctx) + path
+}
+
+// apiVersion asks the daemon once which API versions it supports (GET
+// /version needs no version prefix) and remembers the result. If the daemon
+// cannot be asked, maxAPIVersion is used for this request and the next one
+// asks again.
+func (c *Client) apiVersion(ctx context.Context) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.version != "" {
+		return c.version
+	}
+	body, err := c.get(ctx, "/version", nil)
+	if err != nil {
+		return maxAPIVersion
+	}
+	var v struct {
+		APIVersion    string `json:"ApiVersion"`
+		MinAPIVersion string `json:"MinAPIVersion"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return maxAPIVersion
+	}
+	version, ok := negotiate(v.APIVersion, v.MinAPIVersion)
+	if !ok {
+		return maxAPIVersion
+	}
+	c.version = version
+	return version
+}
+
+// negotiate picks the newest version both sides support: maxAPIVersion, or
+// the daemon's own when it is older, but never below the daemon's minimum.
+func negotiate(daemon, daemonMin string) (string, bool) {
+	if _, _, ok := parseVersion(daemon); !ok {
+		return "", false
+	}
+	v := maxAPIVersion
+	if versionLess(daemon, v) {
+		v = daemon
+	}
+	if _, _, ok := parseVersion(daemonMin); ok && versionLess(v, daemonMin) {
+		v = daemonMin
+	}
+	return v, true
+}
+
+func parseVersion(s string) (major, minor int, ok bool) {
+	a, b, found := strings.Cut(s, ".")
+	if !found {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(a)
+	minor, err2 := strconv.Atoi(b)
+	return major, minor, err1 == nil && err2 == nil
+}
+
+func versionLess(a, b string) bool {
+	am, an, _ := parseVersion(a)
+	bm, bn, _ := parseVersion(b)
+	if am != bm {
+		return am < bm
+	}
+	return an < bn
+}
+
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.get(ctx, "/_ping", nil)
 	return err
@@ -102,7 +178,7 @@ func (c *Client) ProjectContainers(ctx context.Context, dir string) ([]Container
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, "/"+apiVersion+"/containers/json", url.Values{
+	body, err := c.get(ctx, c.api(ctx, "/containers/json"), url.Values{
 		"all":     {"1"},
 		"filters": {string(filters)},
 	})
@@ -136,7 +212,7 @@ func (c *Client) ProjectContainers(ctx context.Context, dir string) ([]Container
 }
 
 func (c *Client) isTTY(ctx context.Context, id string) (bool, error) {
-	body, err := c.get(ctx, "/"+apiVersion+"/containers/"+url.PathEscape(id)+"/json", nil)
+	body, err := c.get(ctx, c.api(ctx, "/containers/"+url.PathEscape(id)+"/json"), nil)
 	if err != nil {
 		return false, err
 	}
@@ -163,7 +239,7 @@ func (c *Client) StreamLogs(ctx context.Context, id string, opts LogOptions, emi
 	if opts.Follow {
 		q.Set("follow", "1")
 	}
-	resp, err := c.open(ctx, "/"+apiVersion+"/containers/"+url.PathEscape(id)+"/logs", q)
+	resp, err := c.open(ctx, c.api(ctx, "/containers/"+url.PathEscape(id)+"/logs"), q)
 	if err != nil {
 		return err
 	}
