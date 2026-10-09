@@ -37,7 +37,8 @@ body {
 h1 { margin: 0; font-size: 1.1rem; font-weight: 600; overflow-wrap: anywhere; }
 h2 { margin: 0; font-size: 1rem; }
 
-main { padding-top: 16px; padding-bottom: 32px; }
+/* main.wrap, not main: .wrap sets the padding and would win over a type selector. */
+main.wrap { padding-top: 16px; padding-bottom: 32px; }
 .version { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
 section {

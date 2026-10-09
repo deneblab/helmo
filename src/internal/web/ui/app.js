@@ -5,6 +5,7 @@
   const STATUS_EVERY_MS = 5000;
   const JOB_EVERY_MS = 1500;
   const MAX_LOG_LINES = 1500;
+  const VERSIONS_SHOWN = 10; // newest versions offered for deploy
   const LOG_RETRY_MIN_MS = 2000;
   const LOG_RETRY_MAX_MS = 30000;
 
@@ -129,7 +130,7 @@
     const sel = $('#version');
     const note = $('#version-note');
     try {
-      const v = await api('/versions?limit=30');
+      const v = await api('/versions?limit=' + VERSIONS_SHOWN);
       sel.replaceChildren();
       for (const tag of v.tags) {
         const o = el('option', '', tag + (tag === v.current ? '  (current)' : ''));
@@ -138,8 +139,12 @@
       }
       sel.disabled = !v.tags.length;
       note.hidden = false;
+      // A current tag missing from the list (such as latest, or an old version
+      // beyond the newest shown) is named here, with its digest.
+      const current = v.current && !v.tags.includes(v.current)
+        ? ` · current: ${formatVersion(v.current + (v.current_digest ? '@' + v.current_digest : ''))}` : '';
       note.textContent = `${v.image} · ${v.total} version${v.total === 1 ? '' : 's'}` +
-        (v.truncated ? `, showing the newest ${v.tags.length}` : '');
+        (v.truncated ? `, showing the newest ${v.tags.length}` : '') + current;
     } catch (e) {
       const none = el('option', '', 'unavailable');
       none.value = '';

@@ -27,11 +27,13 @@ type TagSource interface {
 }
 
 type versionsJSON struct {
-	Image     string   `json:"image"`
-	Current   string   `json:"current,omitempty"`
-	Tags      []string `json:"tags"`
-	Total     int      `json:"total"`
-	Truncated bool     `json:"truncated,omitempty"`
+	Image   string `json:"image"`
+	Current string `json:"current,omitempty"`
+	// CurrentDigest pins Current when the tag is not a version (e.g. latest).
+	CurrentDigest string   `json:"current_digest,omitempty"`
+	Tags          []string `json:"tags"`
+	Total         int      `json:"total"`
+	Truncated     bool     `json:"truncated,omitempty"`
 }
 
 // versions lists the deployable versions (X.Y.Z or vX.Y.Z tags, newest
@@ -84,7 +86,7 @@ func (s *Server) versions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sorted := registry.SortVersions(tags)
-	out := versionsJSON{Image: ref.Name(), Current: ref.Tag, Total: len(sorted), Tags: sorted}
+	out := versionsJSON{Image: ref.Name(), Current: ref.Tag, CurrentDigest: ref.Digest, Total: len(sorted), Tags: sorted}
 	if len(sorted) > limit {
 		out.Tags, out.Truncated = sorted[:limit], true
 	}
