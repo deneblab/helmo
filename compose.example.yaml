@@ -1,0 +1,45 @@
+# Example deployment of Helmo itself. Copy it next to a .env file that sets:
+#
+#   HELMO_TAG=1.2.3                 image version (a tag from ghcr.io/deneblab/helmo)
+#   DOCKER_GID=999                  stat -c %g /var/run/docker.sock
+#   DOCKER_CONFIG_FILE=/home/you/.docker/config.json   the file docker login wrote
+#   TRAEFIK_NETWORK=traefik         network Traefik reaches its backends on
+#
+# Helmo does not manage itself: update it by hand with this file.
+
+services:
+  helmo:
+    image: ghcr.io/deneblab/helmo:${HELMO_TAG:?set HELMO_TAG to an image version}
+    restart: unless-stopped
+    user: "1654:1654"            # owner of /srv/apps/*/.helmo
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID, see the header of this file}"
+    stop_grace_period: 30s
+    # Idle Helmo uses about 10 MB. While deploying it also runs docker compose
+    # (about 30 MB for a simple command; pull and up were not measured), and
+    # child processes count against this limit.
+    mem_limit: 128m
+    environment:
+      HELMO_APPS_DIR: /srv/apps
+      HELMO_LISTEN: ":8080"
+    volumes:
+      # Same path inside and on the host: Compose resolves relative paths of
+      # the apps in the CLI, and the Docker daemon needs the host paths.
+      - /srv/apps:/srv/apps
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_CONFIG_FILE:?set DOCKER_CONFIG_FILE}:/docker-config/config.json:ro
+    networks: [traefik]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+      # One router for every app: any host, any entrypoint (no entryPoints
+      # label), ahead of the apps' own routers. Do NOT publish port 8080.
+      traefik.http.routers.helmo.rule: PathPrefix(`/_helmo`)
+      traefik.http.routers.helmo.priority: "10000"
+      traefik.http.routers.helmo.service: helmo
+      traefik.http.services.helmo.loadbalancer.server.port: "8080"
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK:-traefik}
+    external: true
