@@ -50,10 +50,10 @@ func TestIndexPage(t *testing.T) {
 func TestIndexShowsVersion(t *testing.T) {
 	s := &Server{Docker: &docker.Fake{}, Version: "1.4.2"}
 	h := routingFor([]config.App{{ID: "a", Ports: []int{8600}}}, s)
-	if body := get(h, "/_helmo/", "8600").Body.String(); !strings.Contains(body, "Helmo 1.4.2</footer>") {
+	if body := get(h, "/_helmo/", "8600").Body.String(); !strings.Contains(body, `title="Helmo version">1.4.2</span>`) {
 		t.Errorf("version missing:\n%s", body)
 	}
-	if body := get(uiHandler(), "/_helmo/", "8600").Body.String(); !strings.Contains(body, "Helmo dev</footer>") {
+	if body := get(uiHandler(), "/_helmo/", "8600").Body.String(); !strings.Contains(body, `title="Helmo version">dev</span>`) {
 		t.Errorf("dev fallback missing:\n%s", body)
 	}
 }
