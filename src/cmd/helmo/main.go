@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	"helmo/internal/config"
+	"helmo/internal/docker"
 	"helmo/internal/routing"
+	"helmo/internal/web"
 )
 
 func main() {
@@ -21,6 +24,17 @@ func main() {
 	}
 	log.Printf("loaded %d app(s) from %s", len(apps), appsDir)
 
+	dockerHost := env("DOCKER_HOST", "unix:///var/run/docker.sock")
+	dc, err := docker.NewClient(dockerHost)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := dc.Ping(pingCtx); err != nil {
+		log.Printf("warning: docker at %s is not reachable: %v", dockerHost, err)
+	}
+	cancel()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -32,10 +46,7 @@ func main() {
 			log.Printf("audit app=%s identity=%s ip=%s %s %s status=%d",
 				e.AppID, e.Identity, e.ClientIP, e.Method, e.Path, e.Status)
 		},
-	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		info, _ := routing.FromContext(r.Context())
-		fmt.Fprintf(w, "helmo: app %s\n", info.App.ID)
-	}))
+	}, (&web.Server{Docker: dc}).Handler())
 	mux.Handle("/_helmo/", panel)
 
 	srv := &http.Server{
