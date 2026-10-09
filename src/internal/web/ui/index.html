@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Helmo · {{.AppID}}</title>
+<link rel="stylesheet" href="/_helmo/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <span class="brand">Helmo</span>
+    <span class="sep" aria-hidden="true">/</span>
+    <h1 id="app-id">{{.AppID}}</h1>
+    <span id="state" class="badge state-unknown">loading</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <p id="message" class="message" role="status" aria-live="polite" hidden></p>
+
+  <section aria-labelledby="h-status">
+    <div class="section-head">
+      <h2 id="h-status">Status</h2>
+      <div class="actions">
+        <button type="button" data-action data-op="start">Start</button>
+        <button type="button" data-action data-op="restart">Restart</button>
+        <button type="button" data-action data-op="stop" class="danger">Stop</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Service</th><th>Container</th><th>State</th><th>Health</th><th>Image</th></tr></thead>
+        <tbody id="containers"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-version">
+    <div class="section-head">
+      <h2 id="h-version">Version</h2>
+    </div>
+    <div class="row">
+      <label for="version">Deploy</label>
+      <select id="version" disabled><option value="">Loading…</option></select>
+      <button type="button" id="deploy" data-action disabled>Deploy</button>
+      <button type="button" id="rollback" data-action class="danger">Roll back</button>
+    </div>
+    <p id="version-note" class="muted small" hidden></p>
+    <p id="job" class="job" hidden></p>
+  </section>
+
+  <section aria-labelledby="h-logs">
+    <div class="section-head">
+      <h2 id="h-logs">Logs</h2>
+      <div class="actions">
+        <label for="log-service" class="visually-hidden">Service</label>
+        <select id="log-service"></select>
+        <button type="button" id="log-toggle">Pause</button>
+        <button type="button" id="log-clear">Clear</button>
+      </div>
+    </div>
+    <div id="log" class="log" tabindex="0" role="log" aria-label="Container logs"></div>
+    <p id="log-note" class="muted small" hidden></p>
+  </section>
+
+  <section aria-labelledby="h-history">
+    <div class="section-head">
+      <h2 id="h-history">History</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Action</th><th>From</th><th>To</th><th>Result</th><th>By</th></tr></thead>
+        <tbody id="history"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="/_helmo/static/app.js" defer></script>
+</body>
+</html>

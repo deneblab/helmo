@@ -66,6 +66,7 @@ func main() {
 		Registry: reg,
 		Deployer: &deploy.Deployer{Compose: cm, Docker: dc, Registry: reg},
 	}).Handler())
+	mux.Handle("/_helmo", panel)
 	mux.Handle("/_helmo/", panel)
 
 	srv := &http.Server{

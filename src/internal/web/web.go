@@ -33,6 +33,7 @@ type Server struct {
 // Handler returns the panel routes, mounted under /_helmo/.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.uiRoutes(mux)
 	mux.HandleFunc("GET /_helmo/api/status", s.status)
 	mux.HandleFunc("GET /_helmo/api/logs", s.logs)
 	mux.HandleFunc("GET /_helmo/api/versions", s.versions)
