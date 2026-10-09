@@ -16,10 +16,9 @@ The directory name is the app id and must match `^[a-z0-9-]+$`.
 
 ## Quick way: the script
 
-In the app directory:
+In the app directory (the one with its Compose file):
 
 ```sh
-cd /srv/apps/cadastro
 curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
 ```
 

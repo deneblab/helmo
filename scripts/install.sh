@@ -1,7 +1,6 @@
 #!/bin/sh
 # Installs Helmo, or prepares an app for it. Works in the current directory.
 #
-#   mkdir -p /srv/helmo && cd /srv/helmo
 #   curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- helmo
 #
 #   helmo [options]    write compose.yaml and .env here and start Helmo

@@ -46,10 +46,10 @@ browser ──► Traefik (one entrypoint per app port) ──► the app       
 Needs Docker with the Compose plugin, `curl`, and a running Traefik that is set up
 as in [docs/traefik.md](docs/traefik.md).
 
-1. Install Helmo in a directory of your choice; the script works in the current one:
+1. Install Helmo from the directory where it should live; the script works in the
+   current one:
 
    ```sh
-   mkdir -p /srv/helmo && cd /srv/helmo
    curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- helmo
    ```
 
@@ -58,10 +58,9 @@ as in [docs/traefik.md](docs/traefik.md).
    `--version X.Y.Z`, `--apps-dir DIR`, `--network NAME` and `--yes` to skip the
    questions.
 
-2. Prepare each app, in its own directory:
+2. Prepare each app from its own directory (the one with its Compose file):
 
    ```sh
-   cd /srv/apps/cadastro
    curl -fsSL https://raw.githubusercontent.com/deneblab/helmo/production/scripts/install.sh | sh -s -- app --port 8600
    ```
 
