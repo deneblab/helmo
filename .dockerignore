@@ -1,0 +1,10 @@
+.git
+.github
+.agents
+.gitignore
+.dockerignore
+docs
+scripts
+README.md
+compose.example.yaml
+**/*_test.go
