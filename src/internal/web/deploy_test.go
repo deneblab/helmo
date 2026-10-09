@@ -33,6 +33,18 @@ func (d digestSource) Digest(_ context.Context, _ registry.Ref, ref string) (str
 	return dig, nil
 }
 
+// appTagRunner resolves the image like a compose file with
+// ghcr.io/org/app:${APP_TAG:-v1.2.3}, reading APP_TAG from .helmo/env.
+type appTagRunner struct{ fakeRunner }
+
+func (a *appTagRunner) Output(_ context.Context, dir string, _ ...string) (string, error) {
+	tag, ok, _ := deploy.GetVar(filepath.Join(dir, ".helmo", "env"), "APP_TAG")
+	if !ok || tag == "" {
+		tag = "v1.2.3"
+	}
+	return fmt.Sprintf(`{"services":{"web":{"image":"ghcr.io/org/app:%s"}}}`, tag), nil
+}
+
 func deployHandler(t *testing.T, reg digestSource) (http.Handler, config.App, *compose.Manager) {
 	t.Helper()
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
@@ -40,8 +52,7 @@ func deployHandler(t *testing.T, reg digestSource) (http.Handler, config.App, *c
 	app := config.App{ID: "cadastro", Dir: dir, Ports: []int{8600}, Service: "web", HealthTimeout: 20 * time.Millisecond}
 
 	ops := &docker.Fake{Projects: map[string][]docker.Container{dir: {{ID: "c", Service: "web", State: "running", Health: "healthy"}}}}
-	run := &outRunner{config: `{"services":{"web":{"image":"ghcr.io/org/app:v1.2.3"}}}`}
-	cm := &compose.Manager{Runner: run}
+	cm := &compose.Manager{Runner: &appTagRunner{}}
 	s := &Server{
 		Docker:   ops,
 		Compose:  cm,
@@ -171,5 +182,18 @@ func TestDeployNeedsSameOriginPost(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestDeployEndpointRefusesComposeWithoutAppTag(t *testing.T) {
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(dir, ".helmo"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".helmo", "env"), []byte("APP_TAG=v1.2.3\n"), 0o644)
+	app := config.App{ID: "cadastro", Dir: dir, Ports: []int{8600}, Service: "web"}
+	cm := &compose.Manager{Runner: &outRunner{config: `{"services":{"web":{"image":"ghcr.io/org/app:latest"}}}`}}
+	s := &Server{Docker: &docker.Fake{}, Compose: cm, Deployer: &deploy.Deployer{Compose: cm, Docker: &docker.Fake{}, Registry: digestSource{}}}
+	rec := post(routingFor([]config.App{app}, s), "/_helmo/api/deploy?tag=v1.3.0&dry_run=1", "8600")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "does not take the image tag from APP_TAG") {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 }

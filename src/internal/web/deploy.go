@@ -47,7 +47,8 @@ func deployError(w http.ResponseWriter, appID string, err error) {
 	case errors.Is(err, deploy.ErrBadTag):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, compose.ErrBusy), errors.Is(err, deploy.ErrSameVersion),
-		errors.Is(err, deploy.ErrNoPrevious), errors.Is(err, deploy.ErrNoImage):
+		errors.Is(err, deploy.ErrNoPrevious), errors.Is(err, deploy.ErrNoImage),
+		errors.Is(err, deploy.ErrNotUsingAppTag):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, registry.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)

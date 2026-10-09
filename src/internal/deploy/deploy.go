@@ -28,6 +28,9 @@ var (
 	ErrSameVersion = errors.New("the app already runs this version")
 	ErrNoPrevious  = errors.New("there is no previous version to roll back to")
 	ErrNoImage     = errors.New("cannot determine the service image: define APP_TAG in .helmo/env or start the app once")
+	// ErrNotUsingAppTag: the image in the compose file does not take its tag
+	// from APP_TAG, so writing APP_TAG would change nothing.
+	ErrNotUsingAppTag = errors.New("the compose file does not take the image tag from APP_TAG")
 
 	dockerTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 )
@@ -86,9 +89,14 @@ func (d *Deployer) Plan(ctx context.Context, app config.App, tag string) (Plan, 
 	if !registry.IsVersionTag(tag) {
 		return Plan{}, fmt.Errorf("%w: %q (want X.Y.Z or vX.Y.Z)", ErrBadTag, tag)
 	}
-	service, ref, err := d.resolve(ctx, app)
+	service, ref, fromCompose, err := d.resolve(ctx, app)
 	if err != nil {
 		return Plan{}, err
+	}
+	if fromCompose {
+		if err := checkUsesAppTag(app, ref); err != nil {
+			return Plan{}, err
+		}
 	}
 	digest, err := d.Registry.Digest(ctx, ref, tag)
 	if err != nil {
@@ -129,9 +137,14 @@ func (d *Deployer) Rollback(ctx context.Context, app config.App, by string) (Job
 	if !writable(target) {
 		return Job{}, fmt.Errorf("previous version %q cannot be restored", target)
 	}
-	service, ref, err := d.resolve(ctx, app)
+	service, ref, fromCompose, err := d.resolve(ctx, app)
 	if err != nil {
 		return Job{}, err
+	}
+	if fromCompose {
+		if err := checkUsesAppTag(app, ref); err != nil {
+			return Job{}, err
+		}
 	}
 	p := Plan{Service: service, Ref: ref, Current: d.current(app, ref), Target: target}
 	if p.Current == p.Target {
@@ -216,6 +229,13 @@ func (d *Deployer) run(app config.App, p Plan, target Version, by string, job *J
 
 	d.phase(job, "writing "+envKey)
 	if err := SetVar(env, envKey, target.String()); err != nil {
+		fail(err)
+		return
+	}
+	// The compose file must now resolve to the target, or pull and up would
+	// keep the old image and the deploy would wrongly report success.
+	d.phase(job, "checking the compose file")
+	if err := d.checkResolvesTo(ctx, app, p.Service, target); err != nil {
 		fail(err)
 		return
 	}
@@ -314,10 +334,10 @@ func (d *Deployer) waitHealthy(ctx context.Context, app config.App, service stri
 // resolve finds the service to version and its image repository. Compose is
 // asked first; when it cannot answer (APP_TAG not defined yet) the image of
 // an existing container is used.
-func (d *Deployer) resolve(ctx context.Context, app config.App) (string, registry.Ref, error) {
+func (d *Deployer) resolve(ctx context.Context, app config.App) (service string, ref registry.Ref, fromCompose bool, err error) {
 	if name, img, err := d.Compose.ResolveService(ctx, app, app.Service); err == nil {
 		if ref, err := registry.ParseRef(img); err == nil {
-			return name, ref, nil
+			return name, ref, true, nil
 		}
 	}
 	if app.Service != "" {
@@ -326,13 +346,53 @@ func (d *Deployer) resolve(ctx context.Context, app config.App) (string, registr
 			for _, c := range cs {
 				if c.Service == app.Service && c.Image != "" && !strings.HasPrefix(c.Image, "sha256:") {
 					if ref, err := registry.ParseRef(c.Image); err == nil {
-						return app.Service, ref, nil
+						return app.Service, ref, false, nil
 					}
 				}
 			}
 		}
 	}
-	return "", registry.Ref{}, ErrNoImage
+	return "", registry.Ref{}, false, ErrNoImage
+}
+
+// checkUsesAppTag compares the image Compose resolves with APP_TAG in
+// .helmo/env. When APP_TAG is set but the image does not carry it, the compose
+// file takes its tag from elsewhere (a literal tag or another variable).
+func checkUsesAppTag(app config.App, ref registry.Ref) error {
+	raw, ok, _ := GetVar(filepath.Join(app.Dir, ".helmo", "env"), envKey)
+	if !ok || raw == "" {
+		return nil
+	}
+	return matches(ref, parseCurrent(raw))
+}
+
+// checkResolvesTo asks Compose for the image of service, after APP_TAG was
+// written, and fails unless it is exactly v.
+func (d *Deployer) checkResolvesTo(ctx context.Context, app config.App, service string, v Version) error {
+	img, err := d.Compose.ServiceImage(ctx, app, service)
+	if err != nil {
+		return fmt.Errorf("check the compose file: %w", err)
+	}
+	ref, err := registry.ParseRef(img)
+	if err != nil {
+		return fmt.Errorf("check the compose file: %w", err)
+	}
+	return matches(ref, v)
+}
+
+func matches(ref registry.Ref, v Version) error {
+	if ref.Tag == v.Tag && (v.Digest == "" || ref.Digest == v.Digest) {
+		return nil
+	}
+	got := ref.Name()
+	if ref.Tag != "" {
+		got += ":" + ref.Tag
+	}
+	if ref.Digest != "" {
+		got += "@" + ref.Digest
+	}
+	return fmt.Errorf("%w: APP_TAG is %s, but Compose resolves the image to %s; use ${APP_TAG} as the tag of the image",
+		ErrNotUsingAppTag, v, got)
 }
 
 // current is the version the app is configured to run: APP_TAG in

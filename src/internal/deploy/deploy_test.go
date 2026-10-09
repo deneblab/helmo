@@ -37,6 +37,9 @@ type env struct {
 	health  func(appTag string, upCount int) (state, health string)
 	ups     int
 	digests map[string]string
+	// fixedImage, when set, is what Compose resolves whatever APP_TAG is:
+	// a compose file that does not use APP_TAG.
+	fixedImage string
 }
 
 func newEnv(t *testing.T, initialTag string) *env {
@@ -87,6 +90,9 @@ func (e *env) Run(_ context.Context, dir string, args ...string) (string, error)
 }
 
 func (e *env) Output(context.Context, string, ...string) (string, error) {
+	if e.fixedImage != "" {
+		return fmt.Sprintf(`{"services":{"web":{"image":%q}}}`, e.fixedImage), nil
+	}
 	tag := e.appTag()
 	if tag == "" {
 		tag = "v1.2.3"
@@ -410,4 +416,51 @@ func (f *failingConfig) Run(ctx context.Context, dir string, args ...string) (st
 }
 func (f *failingConfig) Output(context.Context, string, ...string) (string, error) {
 	return "", errors.New("APP_TAG is not set")
+}
+
+// A compose file with a literal tag (or another variable) ignores APP_TAG:
+// a deploy would pull and "up" the old image and report success.
+func TestDeployRefusesComposeFileWithoutAppTag(t *testing.T) {
+	e := newEnv(t, "v1.2.3@"+d123)
+	e.fixedImage = "ghcr.io/org/app:latest"
+	d := e.deployer()
+	if _, err := d.Plan(context.Background(), e.app, "v1.3.0"); !errors.Is(err, ErrNotUsingAppTag) {
+		t.Fatalf("Plan: got %v, want ErrNotUsingAppTag", err)
+	}
+	if _, err := d.Deploy(context.Background(), e.app, "v1.3.0", "tester"); !errors.Is(err, ErrNotUsingAppTag) {
+		t.Fatalf("Deploy: got %v", err)
+	}
+	if len(e.callList()) != 0 {
+		t.Errorf("compose commands ran: %v", e.callList())
+	}
+}
+
+// Without APP_TAG yet, the plan cannot tell; the deploy finds out after
+// writing APP_TAG, restores the file and never pulls.
+func TestDeployDetectsIgnoredAppTagAfterWriting(t *testing.T) {
+	e := newEnv(t, "")
+	e.fixedImage = "ghcr.io/org/app:v1.2.3"
+	d := e.deployer()
+	if _, err := d.Deploy(context.Background(), e.app, "v1.3.0", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	j := wait(t, d, e.app.ID)
+	if j.State != "failed" || !strings.Contains(j.Error, "does not take the image tag from APP_TAG") {
+		t.Fatalf("job: %+v", j)
+	}
+	if e.appTag() != "" {
+		t.Errorf("APP_TAG left behind: %q", e.appTag())
+	}
+	if calls := e.callList(); len(calls) != 0 {
+		t.Errorf("compose commands ran: %v", calls)
+	}
+}
+
+// ${APP_TAG:-latest} with APP_TAG=latest@sha256:... is fine: the image
+// carries APP_TAG.
+func TestPlanAcceptsDefaultedAppTag(t *testing.T) {
+	e := newEnv(t, "latest@"+d123)
+	if _, err := e.deployer().Plan(context.Background(), e.app, "v1.3.0"); err != nil {
+		t.Fatal(err)
+	}
 }
