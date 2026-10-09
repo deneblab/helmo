@@ -37,7 +37,8 @@ body {
 h1 { margin: 0; font-size: 1.1rem; font-weight: 600; overflow-wrap: anywhere; }
 h2 { margin: 0; font-size: 1rem; }
 
-main { padding-top: 16px; padding-bottom: 40px; }
+main { padding-top: 16px; padding-bottom: 16px; }
+footer { padding-bottom: 32px; }
 
 section {
   background: var(--surface);

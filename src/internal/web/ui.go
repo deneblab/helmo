@@ -46,7 +46,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cache-Control", "no-store")
-	if err := indexTemplate.Execute(w, struct{ AppID string }{info.App.ID}); err != nil {
+	if err := indexTemplate.Execute(w, struct{ AppID, Version string }{info.App.ID, s.Version}); err != nil {
 		log.Printf("render index: %v", err)
 	}
 }

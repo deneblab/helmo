@@ -54,16 +54,24 @@ type ExecRunner struct {
 	Bin string // defaults to "docker"
 }
 
-func (e ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (e ExecRunner) command(ctx context.Context, dir string, args []string) *exec.Cmd {
 	bin := e.Bin
 	if bin == "" {
 		bin = defaultBin
 	}
-	full := append([]string{"compose", "--project-directory", dir}, envFileArgs(dir)...)
-	full = append(full, args...)
-	cmd := exec.CommandContext(ctx, bin, full...)
+	full := []string{"compose"}
+	if dir != "" { // commands like "version" need no project
+		full = append(full, "--project-directory", dir)
+		full = append(full, envFileArgs(dir)...)
+	}
+	cmd := exec.CommandContext(ctx, bin, append(full, args...)...)
 	// Compose looks for compose.yaml and .env in the working directory.
 	cmd.Dir = dir
+	return cmd
+}
+
+func (e ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := e.command(ctx, dir, args)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
@@ -73,14 +81,7 @@ func (e ExecRunner) Run(ctx context.Context, dir string, args ...string) (string
 // Output is like Run but returns stdout only (stderr, where Compose prints
 // warnings, is dropped), for commands whose output is parsed.
 func (e ExecRunner) Output(ctx context.Context, dir string, args ...string) (string, error) {
-	bin := e.Bin
-	if bin == "" {
-		bin = defaultBin
-	}
-	full := append([]string{"compose", "--project-directory", dir}, envFileArgs(dir)...)
-	full = append(full, args...)
-	cmd := exec.CommandContext(ctx, bin, full...)
-	cmd.Dir = dir
+	cmd := e.command(ctx, dir, args)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -227,6 +228,17 @@ func (m *Manager) Exec(ctx context.Context, app config.App, args ...string) (str
 		return tail(out), fmt.Errorf("compose %s: %w", args[0], err)
 	}
 	return tail(out), nil
+}
+
+// Version returns the docker compose version, which also proves that the
+// docker CLI and its compose plugin can be started.
+func (m *Manager) Version(ctx context.Context) (string, error) {
+	o, ok := m.Runner.(Outputter)
+	if !ok {
+		return "", errors.New("runner cannot report the compose version")
+	}
+	out, err := o.Output(ctx, "", "version", "--short")
+	return strings.TrimSpace(out), err
 }
 
 // Busy reports the operation currently running for the app, if any.

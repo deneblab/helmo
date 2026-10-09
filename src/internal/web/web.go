@@ -25,6 +25,7 @@ type Server struct {
 	Compose  *compose.Manager
 	Registry TagSource
 	Deployer *deploy.Deployer
+	Version  string // shown in the page footer
 
 	mu      sync.Mutex
 	streams map[string]int // open log streams per app

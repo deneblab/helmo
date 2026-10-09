@@ -266,3 +266,24 @@ func TestExecRunnerOutputIgnoresStderr(t *testing.T) {
 		t.Fatalf("want stderr in error, got %v", err)
 	}
 }
+
+func TestVersionRunsWithoutProject(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "docker")
+	script := "#!/bin/sh\necho \"args=$*\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// the stub echoes its arguments, so Version returns them
+	v, err := (&Manager{Runner: ExecRunner{Bin: bin}}).Version(context.Background())
+	if err != nil || v != "args=compose version --short" {
+		t.Fatalf("got %q err=%v", v, err)
+	}
+	if _, err := (&Manager{Runner: &fakeRunner{}}).Version(context.Background()); err == nil {
+		t.Fatal("runner without Output must report an error")
+	}
+	failing := filepath.Join(t.TempDir(), "docker")
+	os.WriteFile(failing, []byte("#!/bin/sh\necho 'unknown command' >&2\nexit 1\n"), 0o755)
+	if _, err := (&Manager{Runner: ExecRunner{Bin: failing}}).Version(context.Background()); err == nil {
+		t.Fatal("want error when compose is missing")
+	}
+}
