@@ -372,3 +372,24 @@ func TestUsage(t *testing.T) {
 	e.mustFail(e.dir("x"), "usage:")
 	e.mustFail(e.dir("x"), "unknown command", "bogus")
 }
+
+func TestHelmoDetectsTraefikNetwork(t *testing.T) {
+	e := newEnv(t)
+	e.stub("docker", `#!/bin/sh
+echo "docker $*" >> "$STUBLOG"
+case "$1" in
+	ps) echo "abc123 traefik:v3.1" ;;
+	inspect) printf 'bridge\nproxy\n' ;;
+	network) [ "$3" = proxy ] || exit 1 ;;
+esac
+exit 0
+`)
+	work := e.dir("helmo")
+	out := e.mustRun(work, "helmo", "--yes", "--version", "1.2.3", "--apps-dir", filepath.Join(e.root, "apps"))
+	if !strings.Contains(out, "Traefik is running on the network(s): proxy") {
+		t.Errorf("no detection message:\n%s", out)
+	}
+	if got := e.read(filepath.Join(work, ".env")); !strings.Contains(got, "TRAEFIK_NETWORK=proxy\n") {
+		t.Errorf(".env:\n%s", got)
+	}
+}

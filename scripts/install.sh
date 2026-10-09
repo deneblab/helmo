@@ -169,6 +169,13 @@ EOF
 
 # ---- helmo command -----------------------------------------------------------
 
+# traefik_networks: the user-defined networks of running Traefik containers.
+traefik_networks() {
+    for cid in $(docker ps --format '{{.ID}} {{.Image}} {{.Names}}' 2>/dev/null | grep -i traefik | cut -d' ' -f1); do
+        docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$cid" 2>/dev/null
+    done | grep -v -x -e bridge -e host -e none -e '' | sort -u
+}
+
 detect_docker_gid() {
     gid=$(stat -c %g "$SOCKET" 2>/dev/null || true)
     [ -n "$gid" ] || gid=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
@@ -193,11 +200,21 @@ cmd_helmo() {
 
     resolve_version
 
-    [ -n "$APPS_DIR" ] || APPS_DIR=$(ask "Directory with the apps" /srv/apps) || exit 1
+    [ -n "$APPS_DIR" ] || APPS_DIR=$(ask "Directory with the apps (one subdirectory per app, e.g. /srv/apps/cadastro)" /srv/apps) || exit 1
     case $APPS_DIR in /*) ;; *) die "the apps directory must be an absolute path, got '$APPS_DIR'" ;; esac
     safe "$APPS_DIR" "the apps directory"
 
-    [ -n "$NETWORK" ] || NETWORK=$(ask "Docker network of Traefik" traefik) || exit 1
+    if [ -z "$NETWORK" ]; then
+        found=$(traefik_networks)
+        default=traefik
+        if [ -n "$found" ]; then
+            default=$(printf '%s\n' "$found" | head -n 1)
+            say "Traefik is running on the network(s): $(printf '%s' "$found" | tr '\n' ' ')"
+        else
+            say "No running Traefik found; list the networks with: docker network ls"
+        fi
+        NETWORK=$(ask "Docker network Traefik uses to reach Helmo" "$default") || exit 1
+    fi
     safe "$NETWORK" "the network name"
     docker network inspect "$NETWORK" >/dev/null 2>&1 ||
         die "the Docker network '$NETWORK' does not exist; create it, or use the one Traefik is on (--network)"
