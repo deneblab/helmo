@@ -1,0 +1,25 @@
+template: golang124-node24   # built locally from src/sbx-claude-golang124-node24/Dockerfile in the release tarball
+
+# version: 0.2.9     # pin the release to freeze the environment; without it sbxup follows the latest
+# agent: claude      # agent passed to 'sbx run' (default: claude)
+# clone: true        # run on a private in-container git clone (default: off)
+# cache: .sbx-cache  # project directory mounted into the sandbox for package caches
+
+# Extra host directories mounted into the sandbox; append :ro for read-only.
+# Directories outside the project are approved once; your home directory and
+# credential directories such as ~/.ssh are refused.
+# mounts:
+#   - ../shared-libs:ro
+
+# Short-lived GitHub App token for the repo in 'origin', renewed while 'sbx run' lasts.
+# The app's private key is read from Bitwarden on the host ('bw'); only the token
+# reaches the sandbox. The first use per project asks for your approval.
+# github:
+#   bitwarden-item: github-deneblab-agent  # item with a .pem attachment and a client-id field
+#   key-attachment: app.private-key.pem    # default: the item's only .pem attachment
+#   client-id-field: client-id             # default: client-id
+#   app-id-field: app-id                   # used when the client-id field is missing
+#   repositories: [docs]                   # more repos of the same owner as 'origin'
+#   permissions:                           # default: contents, pull_requests, issues: write
+#     contents: write
+#     pull_requests: write
