@@ -6,11 +6,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"helmo/internal/compose"
 	"helmo/internal/config"
 	"helmo/internal/docker"
+	"helmo/internal/registry"
 	"helmo/internal/routing"
 	"helmo/internal/web"
 )
@@ -54,8 +56,9 @@ func main() {
 				e.AppID, e.Identity, e.ClientIP, e.Method, e.Path, e.Status)
 		},
 	}, (&web.Server{
-		Docker:  dc,
-		Compose: &compose.Manager{Runner: compose.ExecRunner{}},
+		Docker:   dc,
+		Compose:  &compose.Manager{Runner: compose.ExecRunner{}},
+		Registry: registry.Source{ConfigPath: dockerConfigPath()},
 	}).Handler())
 	mux.Handle("/_helmo/", panel)
 
@@ -73,4 +76,16 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// dockerConfigPath is where "docker login" keeps registry credentials.
+func dockerConfigPath() string {
+	if dir := os.Getenv("DOCKER_CONFIG"); dir != "" {
+		return filepath.Join(dir, "config.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".docker", "config.json")
 }

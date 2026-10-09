@@ -20,8 +20,9 @@ const dockerTimeout = 10 * time.Second
 
 // Server serves the panel for whichever app the request resolved to.
 type Server struct {
-	Docker  docker.DockerOps
-	Compose *compose.Manager
+	Docker   docker.DockerOps
+	Compose  *compose.Manager
+	Registry TagSource
 
 	mu      sync.Mutex
 	streams map[string]int // open log streams per app
@@ -32,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_helmo/api/status", s.status)
 	mux.HandleFunc("GET /_helmo/api/logs", s.logs)
+	mux.HandleFunc("GET /_helmo/api/versions", s.versions)
 	mux.HandleFunc("POST /_helmo/api/{op}", s.operate)
 	return mux
 }

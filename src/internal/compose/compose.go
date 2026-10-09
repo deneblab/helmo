@@ -4,6 +4,7 @@ package compose
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -63,6 +64,74 @@ func (e ExecRunner) Run(ctx context.Context, dir string, args ...string) (string
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	return out.String(), err
+}
+
+// Output is like Run but returns stdout only (stderr, where Compose prints
+// warnings, is dropped), for commands whose output is parsed.
+func (e ExecRunner) Output(ctx context.Context, dir string, args ...string) (string, error) {
+	bin := e.Bin
+	if bin == "" {
+		bin = defaultBin
+	}
+	full := append([]string{"compose", "--project-directory", dir}, envFileArgs(dir)...)
+	full = append(full, args...)
+	cmd := exec.CommandContext(ctx, bin, full...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, tail(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// Outputter is implemented by runners that can return clean stdout.
+type Outputter interface {
+	Output(ctx context.Context, dir string, args ...string) (string, error)
+}
+
+// ErrNoImage means Compose could not tell which image a service uses (for
+// example APP_TAG is not defined yet).
+var ErrNoImage = errors.New("cannot determine the service image")
+
+// ServiceImage returns the image reference Compose resolves for service in
+// the app's project. An empty service is accepted when the project has
+// exactly one.
+func (m *Manager) ServiceImage(ctx context.Context, app config.App, service string) (string, error) {
+	o, ok := m.Runner.(Outputter)
+	if !ok {
+		return "", ErrNoImage
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := o.Output(ctx, app.Dir, "config", "--format", "json")
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrNoImage, err)
+	}
+	var cfg struct {
+		Services map[string]struct {
+			Image string `json:"image"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		return "", fmt.Errorf("%w: decode compose config: %v", ErrNoImage, err)
+	}
+	if service == "" {
+		if len(cfg.Services) != 1 {
+			return "", fmt.Errorf("%w: several services, set service in app.yaml", ErrNoImage)
+		}
+		for _, v := range cfg.Services {
+			if v.Image == "" {
+				return "", fmt.Errorf("%w: service has no image", ErrNoImage)
+			}
+			return v.Image, nil
+		}
+	}
+	svc, found := cfg.Services[service]
+	if !found || svc.Image == "" {
+		return "", fmt.Errorf("%w: service %q has no image", ErrNoImage, service)
+	}
+	return svc.Image, nil
 }
 
 // envFileArgs makes Compose read the app's .env and .helmo/env explicitly.

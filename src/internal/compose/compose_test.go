@@ -205,3 +205,64 @@ func TestExecRunnerWithRealComposeCLI(t *testing.T) {
 		t.Fatalf("err=%v out=%q", err, out)
 	}
 }
+
+type outFake struct {
+	fakeRunner
+	out string
+	err error
+}
+
+func (o *outFake) Output(context.Context, string, ...string) (string, error) { return o.out, o.err }
+
+func TestServiceImage(t *testing.T) {
+	cfg := `{"services":{"web":{"image":"ghcr.io/org/app:v1.2.3"},"db":{"image":"postgres:16"},"job":{}}}`
+	one := `{"services":{"web":{"image":"ghcr.io/org/app:v1"}}}`
+	tests := []struct {
+		name, out, service, want string
+		err                      error
+		wantErr                  bool
+	}{
+		{"named service", cfg, "web", "ghcr.io/org/app:v1.2.3", nil, false},
+		{"single service without name", one, "", "ghcr.io/org/app:v1", nil, false},
+		{"several services without name", cfg, "", "", nil, true},
+		{"unknown service", cfg, "nope", "", nil, true},
+		{"service without image", cfg, "job", "", nil, true},
+		{"compose fails", "", "web", "", errors.New("exit 1"), true},
+		{"bad json", "not json", "web", "", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{Runner: &outFake{out: tt.out, err: tt.err}}
+			got, err := m.ServiceImage(context.Background(), app, tt.service)
+			if tt.wantErr {
+				if !errors.Is(err, ErrNoImage) {
+					t.Fatalf("got %q err=%v", got, err)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("got %q err=%v", got, err)
+			}
+		})
+	}
+	if _, err := (&Manager{Runner: &fakeRunner{}}).ServiceImage(context.Background(), app, "web"); !errors.Is(err, ErrNoImage) {
+		t.Fatalf("runner without Output: %v", err)
+	}
+}
+
+func TestExecRunnerOutputIgnoresStderr(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "docker")
+	script := "#!/bin/sh\necho '{\"ok\":true}'\necho 'warning: noise' >&2\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := ExecRunner{Bin: bin}.Output(context.Background(), t.TempDir(), "config")
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	fail := filepath.Join(t.TempDir(), "docker")
+	os.WriteFile(fail, []byte("#!/bin/sh\necho 'bad thing' >&2\nexit 2\n"), 0o755)
+	if _, err := (ExecRunner{Bin: fail}).Output(context.Background(), t.TempDir(), "config"); err == nil || !strings.Contains(err.Error(), "bad thing") {
+		t.Fatalf("want stderr in error, got %v", err)
+	}
+}
