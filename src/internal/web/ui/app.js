@@ -264,6 +264,8 @@
   let gotLine = false;    // the current stream delivered a line
   let lastMs = 0;         // time of the newest line shown, to continue after it
   let lastText = '';
+  let skipUntilMs = 0;    // after a reconnect: skip lines up to the last one shown
+  let skipText = '';
   let retryTimer = null;
   let retryDelay = LOG_RETRY_MIN_MS;
 
@@ -277,11 +279,28 @@
     const box = $('#log');
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     const line = el('div', 'line ' + (ev.stream === 'stderr' ? 'stderr' : 'stdout'));
-    if (ev.ts) line.append(el('span', 'ts', new Date(ev.ts).toLocaleTimeString()));
+    if (ev.ts) {
+      const ts = el('span', 'ts', formatLogTime(ev.ts));
+      ts.title = new Date(ev.ts).toString();
+      // A real space, so a copied line does not glue the time to the text.
+      line.append(ts, document.createTextNode(' '));
+    }
     line.append(document.createTextNode(ev.text));
     box.append(line);
     while (box.childElementCount > MAX_LOG_LINES) box.firstElementChild.remove();
     if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  // formatLogTime shows the local time as 24-hour HH:MM:SS, with the date in
+  // front when the line is not from today (a tail can reach weeks back).
+  function formatLogTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const p = (n) => String(n).padStart(2, '0');
+    const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return time;
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${time}`;
   }
 
   function addMarker(text) {
@@ -291,17 +310,25 @@
     }
   }
 
-  // A reconnect asks for lines since the second of the last one shown;
-  // skip those already on the page.
+  // A reconnect asks for lines since the second of the last one shown; skip
+  // those already on the page. Only at the start of that stream: within a
+  // stream lines are never dropped, even when their times are out of order.
   function seen(ev) {
-    if (!ev.ts || !lastMs) return false;
-    const ms = Date.parse(ev.ts);
-    return ms < lastMs || (ms === lastMs && ev.text === lastText);
+    if (!skipUntilMs) return false;
+    const ms = ev.ts ? Date.parse(ev.ts) : NaN;
+    if (ms < skipUntilMs) return true;
+    if (ms === skipUntilMs && ev.text === skipText) {
+      skipUntilMs = 0;
+      return true;
+    }
+    skipUntilMs = 0; // the first new line: show everything from here on
+    return false;
   }
 
   function forget() {
     lastMs = 0;
     lastText = '';
+    skipUntilMs = 0;
   }
 
   function cancelReconnect() {
@@ -325,7 +352,12 @@
       return;
     }
     let url = `${API}/logs?tail=${tail}&service=${encodeURIComponent(service)}`;
-    if (sinceSeconds) url += `&since=${sinceSeconds}`;
+    skipUntilMs = 0;
+    if (sinceSeconds) {
+      url += `&since=${sinceSeconds}`;
+      skipUntilMs = lastMs;
+      skipText = lastText;
+    }
     gotLine = false;
     source = new EventSource(url);
     source.onopen = () => {
@@ -341,8 +373,9 @@
         logNote('');
       }
       addLogLine(ev);
-      if (ev.ts) {
-        lastMs = Date.parse(ev.ts);
+      const ms = ev.ts ? Date.parse(ev.ts) : NaN;
+      if (ms >= lastMs) {
+        lastMs = ms;
         lastText = ev.text;
       }
     };

@@ -108,7 +108,7 @@ td.wrap-cell { white-space: normal; overflow-wrap: anywhere; }
 }
 .log .line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .log .line.stderr { color: #ff9d94; }
-.log .ts { color: #7f8da1; margin-right: 8px; }
+.log .ts { color: #7f8da1; margin-right: 4px; }
 .log .line.marker { color: #7f8da1; font-style: italic; margin: 4px 0; }
 
 .visually-hidden {
