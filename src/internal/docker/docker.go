@@ -4,6 +4,7 @@ package docker
 
 import (
 	"context"
+	"regexp"
 	"strings"
 )
 
@@ -34,6 +35,9 @@ type Container struct {
 	Image   string
 	State   string // Docker state: running, exited, created, paused, restarting, ...
 	Health  string // healthy, unhealthy, starting, or "" without a healthcheck
+	// Finished: exited with code 0, like a migration or init job that ran
+	// to the end. It is not a failure and does not make the app partial.
+	Finished bool
 }
 
 // Running reports whether the container is up.
@@ -55,8 +59,11 @@ func Summarize(cs []Container) State {
 	if len(cs) == 0 {
 		return StateDown
 	}
-	up, unhealthy := 0, false
+	up, expected, unhealthy := 0, 0, false
 	for _, c := range cs {
+		if !c.Finished {
+			expected++
+		}
 		if c.Running() {
 			up++
 		}
@@ -67,13 +74,19 @@ func Summarize(cs []Container) State {
 	switch {
 	case up == 0:
 		return StateStopped
-	case up < len(cs):
+	case up < expected:
 		return StatePartial
 	case unhealthy:
 		return StateUnhealthy
 	}
 	return StateRunning
 }
+
+var exitedOK = regexp.MustCompile(`^Exited \(0\)`)
+
+// finishedFromStatus reports whether the list status says the container
+// exited with code 0, e.g. "Exited (0) 3 hours ago".
+func finishedFromStatus(status string) bool { return exitedOK.MatchString(status) }
 
 // healthFromStatus extracts the healthcheck result from the human readable
 // status of the list endpoint, e.g. "Up 2 hours (healthy)".

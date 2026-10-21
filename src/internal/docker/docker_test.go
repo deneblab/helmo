@@ -27,6 +27,10 @@ func TestSummarize(t *testing.T) {
 		{"some running", []Container{up, down}, StatePartial},
 		{"none running", []Container{down, {State: "created"}}, StateStopped},
 		{"restarting is not up", []Container{{State: "restarting"}}, StateStopped},
+		{"finished job next to a running app", []Container{up, {State: "exited", Finished: true}}, StateRunning},
+		{"finished job and unhealthy app", []Container{upBad, {State: "exited", Finished: true}}, StateUnhealthy},
+		{"failed job next to a running app", []Container{up, down}, StatePartial},
+		{"only a finished job", []Container{{State: "exited", Finished: true}}, StateStopped},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -34,6 +38,21 @@ func TestSummarize(t *testing.T) {
 				t.Fatalf("got %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFinishedFromStatus(t *testing.T) {
+	tests := map[string]bool{
+		"Exited (0) 3 hours ago":   true,
+		"Exited (255) 3 hours ago": false,
+		"Exited (1) 2 seconds ago": false,
+		"Up 2 hours":               false,
+		"Created":                  false,
+	}
+	for in, want := range tests {
+		if got := finishedFromStatus(in); got != want {
+			t.Errorf("%q: got %v, want %v", in, got, want)
+		}
 	}
 }
 
@@ -110,7 +129,7 @@ func TestClientOverUnixSocket(t *testing.T) {
 	}
 	want := []Container{
 		{ID: "0123456789ab", Name: "cadastro-web-1", Service: "web", Image: "ghcr.io/org/app:v1.2.3", State: "running", Health: "healthy"},
-		{ID: "fedcba987654", Name: "cadastro-db-1", Service: "db", Image: "postgres:16", State: "exited"},
+		{ID: "fedcba987654", Name: "cadastro-db-1", Service: "db", Image: "postgres:16", State: "exited", Finished: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)

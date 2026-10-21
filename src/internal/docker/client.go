@@ -200,12 +200,13 @@ func (c *Client) ProjectContainers(ctx context.Context, dir string) ([]Container
 			id = id[:12]
 		}
 		out = append(out, Container{
-			ID:      id,
-			Name:    name,
-			Service: l.Labels[LabelService],
-			Image:   l.Image,
-			State:   l.State,
-			Health:  healthFromStatus(l.Status),
+			ID:       id,
+			Name:     name,
+			Service:  l.Labels[LabelService],
+			Image:    l.Image,
+			State:    l.State,
+			Health:   healthFromStatus(l.Status),
+			Finished: l.State == "exited" && finishedFromStatus(l.Status),
 		})
 	}
 	return out, nil
