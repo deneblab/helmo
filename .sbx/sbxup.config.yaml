@@ -2,6 +2,7 @@ template: golang124-node24   # built locally from src/sbx-claude-golang124-node2
 
 # version: 0.2.9     # pin the release to freeze the environment; without it sbxup follows the latest
 # agent: claude      # agent passed to 'sbx run' (default: claude)
+# sandbox: app-claude # sandbox name (default: <parent>--<folder>--<agent>, e.g. deneblab--app--claude)
 # clone: true        # run on a private in-container git clone (default: off)
 # cache: .sbx-cache  # project directory mounted into the sandbox for package caches
 
@@ -11,9 +12,16 @@ template: golang124-node24   # built locally from src/sbx-claude-golang124-node2
 # mounts:
 #   - ../shared-libs:ro
 
-# Short-lived GitHub App token for the repo in 'origin', renewed while 'sbx run' lasts.
-# The app's private key is read from Bitwarden on the host ('bw'); only the token
-# reaches the sandbox. The first use per project asks for your approval.
+# GitHub token for the sandbox from your own login: run 'sbxup --gh-login' once per
+# machine, then no password and no key. It acts as you with the app's permissions, in
+# every organization where the app is installed. The first use per project asks for
+# your approval. Use this block or the Bitwarden one below, not both.
+github:
+  client-id: Iv23liaEy0Z52GC9CjOw                # the GitHub App's client ID (device flow enabled)
+
+# Or: a short-lived GitHub App installation token for the repo in 'origin', renewed
+# while 'sbx run' lasts. The app's private key is read from Bitwarden on the host
+# ('bw'); only the token reaches the sandbox.
 # github:
 #   bitwarden-item: github-deneblab-agent  # item with a .pem attachment and a client-id field
 #   key-attachment: app.private-key.pem    # default: the item's only .pem attachment
@@ -23,3 +31,17 @@ template: golang124-node24   # built locally from src/sbx-claude-golang124-node2
 #   permissions:                           # default: contents, pull_requests, issues: write
 #     contents: write
 #     pull_requests: write
+
+# Deny rules in this sandbox's sbx policy: the proxy refuses a git push over HTTPS and
+# GitHub API writes that create commits (no-push), or DELETE on api.github.com/repos
+# (no-delete). Guardrails, not a boundary: GraphQL and SSH stay open. To allow pushes
+# to some repositories only, narrow the token instead ('github.repositories').
+# restrict:
+#   no-push: true     # no git push, no commits through the GitHub API
+#   no-delete: true   # no DELETE on api.github.com/repos/**
+
+# Project directories the agent must not reach. Each is covered in the sandbox by an
+# empty read-only mount, and the agent loses sudo, which could unmount it. Default:
+# 'dev' when it exists; 'hide: []' turns it off. Not with clone mode.
+# hide:
+#   - dev
