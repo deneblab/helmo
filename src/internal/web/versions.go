@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"helmo/internal/compose"
 	"helmo/internal/config"
 	"helmo/internal/registry"
 	"helmo/internal/routing"
@@ -102,11 +103,17 @@ func (s *Server) serviceImage(ctx context.Context, app config.App, service strin
 	if err == nil {
 		return img, nil
 	}
+	log.Printf("versions app=%s: %v", app.ID, err)
 	cs, derr := s.Docker.ProjectContainers(ctx, app.Dir)
 	if derr == nil {
 		if c, status, _ := pickContainer(cs, service); status == 0 && c.Image != "" && !strings.HasPrefix(c.Image, "sha256:") {
 			return c.Image, nil
 		}
+	}
+	// Compose's own message may quote files of the app, so only a reason
+	// Helmo wrote itself is shown.
+	if reason := compose.ImageReason(err); reason != "" {
+		return "", errors.New("cannot determine the image: " + reason)
 	}
 	return "", errors.New("cannot determine the image: define APP_TAG in .helmo/env or start the app once")
 }

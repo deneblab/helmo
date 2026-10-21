@@ -3,10 +3,14 @@
 package routing
 
 import (
+	"context"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"helmo/internal/config"
 )
@@ -16,17 +20,68 @@ import (
 // entrypoint that accepted the connection, so that header identifies the
 // app. The port in Host, when present, must agree with it.
 type Resolver struct {
+	mu     sync.RWMutex
+	apps   []config.App
 	byPort map[int]config.App
 }
 
 func NewResolver(apps []config.App) *Resolver {
+	r := &Resolver{}
+	r.Reload(apps)
+	return r
+}
+
+// Reload replaces the known apps; requests in flight keep the app they
+// already resolved.
+func (r *Resolver) Reload(apps []config.App) {
 	byPort := make(map[int]config.App)
 	for _, a := range apps {
 		for _, p := range a.Ports {
 			byPort[p] = a
 		}
 	}
-	return &Resolver{byPort: byPort}
+	r.mu.Lock()
+	r.apps, r.byPort = apps, byPort
+	r.mu.Unlock()
+}
+
+// Watch calls load every interval until ctx ends and reloads the resolver
+// when the apps changed, so a new .helmo/app.yaml needs no restart of Helmo.
+// A failing load (for example a half-written file) keeps the apps that work
+// and is reported once per distinct error. changed, when not nil, is called
+// with the new apps after each reload.
+func (r *Resolver) Watch(ctx context.Context, interval time.Duration, load func() ([]config.App, error),
+	changed func([]config.App), logf func(format string, args ...any)) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	lastErr := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		apps, err := load()
+		if err != nil {
+			if err.Error() != lastErr {
+				logf("reload apps: %v (keeping the previous configuration)", err)
+			}
+			lastErr = err.Error()
+			continue
+		}
+		lastErr = ""
+		r.mu.RLock()
+		same := reflect.DeepEqual(apps, r.apps)
+		r.mu.RUnlock()
+		if same {
+			continue
+		}
+		r.Reload(apps)
+		logf("reloaded %d app(s)", len(apps))
+		if changed != nil {
+			changed(apps)
+		}
+	}
 }
 
 // Resolve returns the app for req, or false when the request must be
@@ -46,7 +101,9 @@ func (r *Resolver) Resolve(req *http.Request) (config.App, bool) {
 		return config.App{}, false
 	}
 
+	r.mu.RLock()
 	app, ok := r.byPort[port]
+	r.mu.RUnlock()
 	if !ok {
 		return config.App{}, false
 	}

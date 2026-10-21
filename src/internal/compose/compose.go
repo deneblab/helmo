@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +101,23 @@ type Outputter interface {
 // example APP_TAG is not defined yet).
 var ErrNoImage = errors.New("cannot determine the service image")
 
+// reasonError carries a cause written by Helmo itself, safe to show in the
+// UI (unlike Compose's own error output).
+type reasonError struct{ msg string }
+
+func (e *reasonError) Error() string { return e.msg }
+
+// ImageReason returns why the image could not be determined when the cause
+// is one Helmo can explain to the user, such as a project with several
+// services; otherwise "".
+func ImageReason(err error) string {
+	var r *reasonError
+	if errors.As(err, &r) {
+		return r.msg
+	}
+	return ""
+}
+
 // ServiceImages returns service name -> image as Compose resolves them
 // (APP_TAG included). Services without an image are omitted.
 func (m *Manager) ServiceImages(ctx context.Context, app config.App) (map[string]string, error) {
@@ -146,7 +165,7 @@ func (m *Manager) ResolveService(ctx context.Context, app config.App, service st
 	}
 	if service == "" {
 		if len(images) != 1 {
-			return "", "", fmt.Errorf("%w: several services, set service in app.yaml", ErrNoImage)
+			return "", "", fmt.Errorf("%w: %w", ErrNoImage, &reasonError{"several services, set service in app.yaml"})
 		}
 		for n, img := range images {
 			return n, img, nil
@@ -154,7 +173,7 @@ func (m *Manager) ResolveService(ctx context.Context, app config.App, service st
 	}
 	img, ok := images[service]
 	if !ok {
-		return "", "", fmt.Errorf("%w: service %q has no image", ErrNoImage, service)
+		return "", "", fmt.Errorf("%w: %w", ErrNoImage, &reasonError{fmt.Sprintf("service %q has no image", service)})
 	}
 	return service, img, nil
 }
@@ -206,6 +225,7 @@ func (m *Manager) Do(ctx context.Context, app config.App, op Op) (Result, error)
 	out, err := m.Runner.Run(runCtx, app.Dir, args...)
 	res := Result{Op: op, Output: tail(out)}
 	if err != nil {
+		res.Output = m.withFailedLog(ctx, app, res.Output)
 		return res, fmt.Errorf("%s %s: %w", op, app.ID, err)
 	}
 	return res, nil
@@ -225,7 +245,7 @@ func (m *Manager) Acquire(appID string, op Op) (release func(), err error) {
 func (m *Manager) Exec(ctx context.Context, app config.App, args ...string) (string, error) {
 	out, err := m.Runner.Run(ctx, app.Dir, args...)
 	if err != nil {
-		return tail(out), fmt.Errorf("compose %s: %w", args[0], err)
+		return m.withFailedLog(ctx, app, tail(out)), fmt.Errorf("compose %s: %w", args[0], err)
 	}
 	return tail(out), nil
 }
@@ -266,6 +286,33 @@ func (m *Manager) release(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.busy, id)
+}
+
+// failedService finds the service Compose names in "service X didn't
+// complete successfully" (a depends_on service_completed_successfully
+// service, such as a migration, that exited with an error).
+var failedService = regexp.MustCompile(`service "([A-Za-z0-9._-]+)" didn't complete successfully`)
+
+const (
+	failedLogLines   = 20
+	failedLogTimeout = 10 * time.Second
+)
+
+// withFailedLog appends the last log lines of the service that failed to
+// complete, because Compose itself only prints "exit 255". Best effort: when
+// the log cannot be read the output is returned unchanged.
+func (m *Manager) withFailedLog(ctx context.Context, app config.App, out string) string {
+	match := failedService.FindStringSubmatch(out)
+	if match == nil {
+		return out
+	}
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedLogTimeout)
+	defer cancel()
+	logs, err := m.Runner.Run(logCtx, app.Dir, "logs", "--no-color", "--tail", strconv.Itoa(failedLogLines), match[1])
+	if logs = strings.TrimSpace(logs); err != nil || logs == "" {
+		return out
+	}
+	return out + "\n\nLast log lines of " + match[1] + ":\n" + tail(logs)
 }
 
 func argsFor(op Op) ([]string, error) {

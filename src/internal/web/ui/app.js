@@ -163,6 +163,9 @@
     updateButtons();
   }
 
+  const OLDER_VERSION_WARNING = 'This is an older version. If a newer version already migrated the ' +
+    'database, the older one may fail to start.';
+
   async function deploy() {
     const tag = $('#version').value;
     if (!tag) return;
@@ -177,13 +180,14 @@
       show(`Already running ${formatVersion(plan.current)}.`);
       return;
     }
-    const question = `Deploy ${plan.image}\n${formatVersion(plan.current)}  →  ${formatVersion(plan.target)}`;
+    let question = `Deploy ${plan.image}\n${formatVersion(plan.current)}  →  ${formatVersion(plan.target)}`;
+    if (plan.downgrade) question += `\n\n${OLDER_VERSION_WARNING}`;
     if (!window.confirm(question)) return;
     await startJob(() => post('/deploy', { tag }));
   }
 
   async function rollback() {
-    if (!window.confirm('Roll back to the previous version?')) return;
+    if (!window.confirm(`Roll back to the previous version?\n\n${OLDER_VERSION_WARNING}`)) return;
     await startJob(() => post('/rollback'));
   }
 

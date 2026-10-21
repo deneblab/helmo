@@ -90,6 +90,9 @@ func TestDeployEndpointsHappyPath(t *testing.T) {
 		plan["target"] != "v1.3.0@"+dig || plan["image"] != "ghcr.io/org/app" || plan["changes"] != true {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
+	if plan["downgrade"] != false {
+		t.Fatalf("newer target flagged as downgrade: %s", rec.Body)
+	}
 	if _, err := os.Stat(filepath.Join(app.Dir, ".helmo", "env")); err == nil {
 		t.Fatal("dry run must not write anything")
 	}

@@ -16,6 +16,27 @@ type version struct {
 // IsVersionTag reports whether tag is X.Y.Z or vX.Y.Z.
 func IsVersionTag(tag string) bool { return semverTag.MatchString(tag) }
 
+// CompareVersions compares two version tags (X.Y.Z or vX.Y.Z, the "v" is
+// ignored): -1 when a is older than b, 0 when equal, 1 when newer. ok is
+// false when either is not a version tag.
+func CompareVersions(a, b string) (cmp int, ok bool) {
+	ma, mb := semverTag.FindStringSubmatch(a), semverTag.FindStringSubmatch(b)
+	if ma == nil || mb == nil {
+		return 0, false
+	}
+	for i := 1; i <= 3; i++ {
+		x, _ := strconv.Atoi(ma[i])
+		y, _ := strconv.Atoi(mb[i])
+		if x != y {
+			if x < y {
+				return -1, true
+			}
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
 // SortVersions returns the version tags of in, newest first. Other tags are
 // dropped. When 1.2.3 and v1.2.3 both exist both stay, "v" first.
 func SortVersions(in []string) []string {

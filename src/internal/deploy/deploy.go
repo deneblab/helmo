@@ -27,13 +27,23 @@ var (
 	ErrBadTag      = errors.New("not a version tag")
 	ErrSameVersion = errors.New("the app already runs this version")
 	ErrNoPrevious  = errors.New("there is no previous version to roll back to")
-	ErrNoImage     = errors.New("cannot determine the service image: define APP_TAG in .helmo/env or start the app once")
+	ErrNoImage     = &noImageError{"define APP_TAG in .helmo/env or start the app once"}
 	// ErrNotUsingAppTag: the image in the compose file does not take its tag
 	// from APP_TAG, so writing APP_TAG would change nothing.
 	ErrNotUsingAppTag = errors.New("the compose file does not take the image tag from APP_TAG")
 
 	dockerTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 )
+
+// noImageError says why the image of the service is unknown. Every value
+// matches ErrNoImage with errors.Is, so callers need not tell them apart.
+type noImageError struct{ reason string }
+
+func (e *noImageError) Error() string {
+	return "cannot determine the service image: " + e.reason
+}
+
+func (e *noImageError) Is(target error) bool { return target == ErrNoImage }
 
 // Registry is the part of the registry client deploy needs.
 type Registry interface {
@@ -70,6 +80,10 @@ type Plan struct {
 	Ref     registry.Ref
 	Current Version
 	Target  Version
+	// Downgrade: the target is an older version than the current one. A newer
+	// version may have migrated the app's data, which the older one may not
+	// read; Helmo cannot tell, so it only warns.
+	Downgrade bool
 }
 
 // Last returns the latest job of the app, if any ran since Helmo started.
@@ -106,7 +120,9 @@ func (d *Deployer) Plan(ctx context.Context, app config.App, tag string) (Plan, 
 	if err != nil {
 		return Plan{}, err
 	}
-	return Plan{Service: service, Ref: ref, Current: d.current(app, ref), Target: target}, nil
+	current := d.current(app, ref)
+	cmp, ok := registry.CompareVersions(target.Tag, current.Tag)
+	return Plan{Service: service, Ref: ref, Current: current, Target: target, Downgrade: ok && cmp < 0}, nil
 }
 
 // Deploy starts changing the app to tag and returns at once; follow the
@@ -335,10 +351,13 @@ func (d *Deployer) waitHealthy(ctx context.Context, app config.App, service stri
 // asked first; when it cannot answer (APP_TAG not defined yet) the image of
 // an existing container is used.
 func (d *Deployer) resolve(ctx context.Context, app config.App) (service string, ref registry.Ref, fromCompose bool, err error) {
+	var cause error
 	if name, img, err := d.Compose.ResolveService(ctx, app, app.Service); err == nil {
 		if ref, err := registry.ParseRef(img); err == nil {
 			return name, ref, true, nil
 		}
+	} else {
+		cause = err
 	}
 	if app.Service != "" {
 		cs, err := d.Docker.ProjectContainers(ctx, app.Dir)
@@ -351,6 +370,9 @@ func (d *Deployer) resolve(ctx context.Context, app config.App) (service string,
 				}
 			}
 		}
+	}
+	if reason := compose.ImageReason(cause); reason != "" {
+		return "", registry.Ref{}, false, &noImageError{reason}
 	}
 	return "", registry.Ref{}, false, ErrNoImage
 }

@@ -309,3 +309,23 @@ func TestSchemeAndChallenge(t *testing.T) {
 		t.Errorf("%s %v", s, p)
 	}
 }
+
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"0.2.1", "0.2.6", -1, true},
+		{"v1.10.0", "v1.9.9", 1, true},
+		{"v1.2.3", "1.2.3", 0, true},
+		{"1.0.0", "0.9.9", 1, true},
+		{"latest", "1.0.0", 0, false},
+		{"1.0.0", "1.0", 0, false},
+	}
+	for _, tt := range tests {
+		if got, ok := CompareVersions(tt.a, tt.b); got != tt.want || ok != tt.ok {
+			t.Errorf("CompareVersions(%q, %q) = %d, %v; want %d, %v", tt.a, tt.b, got, ok, tt.want, tt.ok)
+		}
+	}
+}

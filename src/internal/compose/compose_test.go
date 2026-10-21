@@ -287,3 +287,79 @@ func TestVersionRunsWithoutProject(t *testing.T) {
 		t.Fatal("want error when compose is missing")
 	}
 }
+
+// scriptRunner answers `logs` with logOut and every other command with
+// upOut/upErr.
+type scriptRunner struct {
+	upOut  string
+	upErr  error
+	logOut string
+	logErr error
+	calls  [][]string
+}
+
+func (s *scriptRunner) Run(_ context.Context, _ string, args ...string) (string, error) {
+	s.calls = append(s.calls, args)
+	if args[0] == "logs" {
+		return s.logOut, s.logErr
+	}
+	return s.upOut, s.upErr
+}
+
+const migrateFailed = `Container app-migrate Error service "migrate" didn't complete successfully: exit 255
+service "migrate" didn't complete successfully: exit 255`
+
+func TestDoAddsLogOfFailedService(t *testing.T) {
+	r := &scriptRunner{upOut: migrateFailed, upErr: errors.New("exit status 1"),
+		logOut: "ERROR Can't locate revision identified by '20261021_0003'\n"}
+	res, err := (&Manager{Runner: r}).Do(context.Background(), app, OpStart)
+	if err == nil {
+		t.Fatal("want the start error")
+	}
+	if !strings.Contains(res.Output, "exit 255") || !strings.Contains(res.Output, "Last log lines of migrate:") ||
+		!strings.Contains(res.Output, "Can't locate revision") {
+		t.Fatalf("output %q", res.Output)
+	}
+	want := []string{"logs", "--no-color", "--tail", "20", "migrate"}
+	if got := r.calls[len(r.calls)-1]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("log command %v, want %v", got, want)
+	}
+}
+
+func TestDoLeavesOutputWhenLogIsUnavailable(t *testing.T) {
+	tests := map[string]*scriptRunner{
+		"log fails":      {upOut: migrateFailed, upErr: errors.New("x"), logErr: errors.New("no such service")},
+		"log empty":      {upOut: migrateFailed, upErr: errors.New("x")},
+		"other failure":  {upOut: "pull access denied", upErr: errors.New("x"), logOut: "unrelated"},
+		"service succes": {upOut: migrateFailed, logOut: "not read"},
+	}
+	for name, r := range tests {
+		t.Run(name, func(t *testing.T) {
+			res, _ := (&Manager{Runner: r}).Do(context.Background(), app, OpStart)
+			if strings.Contains(res.Output, "Last log lines") {
+				t.Fatalf("output %q", res.Output)
+			}
+		})
+	}
+}
+
+func TestExecAddsLogOfFailedService(t *testing.T) {
+	r := &scriptRunner{upOut: migrateFailed, upErr: errors.New("x"), logOut: "boom"}
+	out, err := (&Manager{Runner: r}).Exec(context.Background(), app, "up", "-d", "web")
+	if err == nil || !strings.Contains(out, "Last log lines of migrate:\nboom") {
+		t.Fatalf("out %q err=%v", out, err)
+	}
+}
+
+func TestImageReason(t *testing.T) {
+	cfg := `{"services":{"web":{"image":"a:1"},"migrate":{"image":"a:1"}}}`
+	_, err := (&Manager{Runner: &outFake{out: cfg}}).ServiceImage(context.Background(), app, "")
+	if got := ImageReason(err); got != "several services, set service in app.yaml" {
+		t.Fatalf("reason %q err=%v", got, err)
+	}
+	// Compose's own error output is not a reason Helmo may show.
+	_, err = (&Manager{Runner: &outFake{err: errors.New("parse /srv/apps/x/compose.yaml line 4")}}).ServiceImage(context.Background(), app, "web")
+	if got := ImageReason(err); got != "" || !errors.Is(err, ErrNoImage) {
+		t.Fatalf("reason %q err=%v", got, err)
+	}
+}

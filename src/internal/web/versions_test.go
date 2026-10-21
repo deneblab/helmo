@@ -127,6 +127,22 @@ func TestVersionsImageUnknown(t *testing.T) {
 	}
 }
 
+func TestVersionsSeveralServicesNamesTheCause(t *testing.T) {
+	cfg := `{"services":{"web":{"image":"ghcr.io/org/app:v1.2.3"},"migrate":{"image":"ghcr.io/org/app:v1.2.3"}}}`
+	h := versionsHandler(&docker.Fake{}, &outRunner{config: cfg}, &fakeTags{}, "")
+	rec := get(h, "/_helmo/api/versions", "8600")
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict || !strings.Contains(body, "several services, set service in app.yaml") ||
+		strings.Contains(body, "APP_TAG") {
+		t.Fatalf("%d %s", rec.Code, body)
+	}
+	// Compose's own error text is never sent to the page.
+	h = versionsHandler(&docker.Fake{}, &outRunner{cfgErr: errors.New("secret path /srv/x")}, &fakeTags{}, "web")
+	if body := get(h, "/_helmo/api/versions", "8600").Body.String(); strings.Contains(body, "secret") {
+		t.Fatalf("leaked: %s", body)
+	}
+}
+
 func TestVersionsRegistryErrors(t *testing.T) {
 	run := &outRunner{config: cfgJSON}
 	h := versionsHandler(&docker.Fake{}, run, &fakeTags{err: errors.New("dial tcp 10.0.0.5: secret-internal-detail")}, "web")

@@ -113,6 +113,14 @@ health_timeout: 60s    # how long a new version gets to become healthy (default 
 An app is managed only when it has this file with `enabled: true`. A directory
 name must match `^[a-z0-9-]+$`, and a port can belong to one app only.
 
+Helmo reads these files again every 10 seconds, so a change (for example adding
+`service`) needs no restart. A file that does not parse is logged and the
+previous settings stay. A new port still needs a Traefik entrypoint.
+
+`service` is required when the Compose project has more than one service with
+an `image` (for example the app and a `migrate` job). Without it the Versions
+panel, Deploy and Roll back answer "several services, set service in app.yaml".
+
 ## API
 
 All under `/_helmo/api`, JSON unless noted. State-changing requests need to

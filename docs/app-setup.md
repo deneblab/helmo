@@ -50,6 +50,13 @@ forget the wrapper below.
 Only this one service is deployed by Helmo (pulled and recreated). Other
 services, such as a database, are not touched by a deployment.
 
+If a job such as `migrate` takes its image from the same `APP_TAG`, it runs with
+the version Helmo starts. A version older than the one that last migrated the database can make
+that job fail (for example Alembic: "Can't locate revision"). Helmo warns
+before a rollback or a deploy to an older version. When a service fails to
+complete, the last lines of its log are added to the message of the failed
+start or deployment.
+
 ## 2. Write `.helmo/app.yaml`
 
 ```yaml
@@ -59,7 +66,20 @@ ports: [8600]
 
 Optional keys: `hosts`, `service` (needed when the project has several services),
 `health_timeout`. See the [README](../README.md#configuration). Helmo reads these
-files only when it starts: restart it after adding or changing an app.
+files again every 10 seconds, so no restart is needed after changing an app. A
+new port still needs a Traefik entrypoint.
+
+When the project has several services with an `image`, for example the app and a
+`migrate` job that must finish first, set `service` to the one Helmo versions:
+
+```yaml
+enabled: true
+ports: [8600]
+service: web
+```
+
+Without it Helmo cannot tell which image to version and the Versions panel shows
+"several services, set service in app.yaml".
 
 ## 3. Give Helmo access
 

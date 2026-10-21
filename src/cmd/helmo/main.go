@@ -29,6 +29,10 @@ import (
 // version is set at build time: -ldflags "-X main.version=1.2.3".
 var version = "dev"
 
+// appsReloadInterval is how often the apps' .helmo/app.yaml files are read
+// again.
+const appsReloadInterval = 10 * time.Second
+
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	healthcheck := flag.Bool("healthcheck", false, "query the running server and exit 0 when it is healthy")
@@ -76,8 +80,9 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	resolver := routing.NewResolver(apps)
 	panel := routing.Middleware(routing.Options{
-		Resolver: routing.NewResolver(apps),
+		Resolver: resolver,
 		Audit: func(e routing.AuditEvent) {
 			log.Printf("audit app=%s identity=%s ip=%s %s %s status=%d",
 				e.AppID, e.Identity, e.ClientIP, e.Method, e.Path, e.Status)
@@ -96,6 +101,14 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go resolver.Watch(ctx, appsReloadInterval, func() ([]config.App, error) { return config.Load(appsDir) },
+		func(apps []config.App) {
+			for _, a := range apps {
+				if err := compose.EnsureWrapper(a.Dir); err != nil {
+					log.Printf("warning: app %s: cannot write .helmo/dc: %v", a.ID, err)
+				}
+			}
+		}, log.Printf)
 	go func() {
 		<-ctx.Done()
 		log.Print("shutting down")

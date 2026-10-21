@@ -83,6 +83,8 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 			"current": p.Current.String(),
 			"target":  p.Target.String(),
 			"changes": p.Current != p.Target,
+			// Older than the running version: its data may be too new for it.
+			"downgrade": p.Downgrade,
 		})
 		return
 	}

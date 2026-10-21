@@ -464,3 +464,39 @@ func TestPlanAcceptsDefaultedAppTag(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type twoServices struct{ failingConfig }
+
+func (*twoServices) Output(context.Context, string, ...string) (string, error) {
+	return `{"services":{"web":{"image":"ghcr.io/org/app:v1"},"migrate":{"image":"ghcr.io/org/app:v1"}}}`, nil
+}
+
+func TestPlanNamesSeveralServices(t *testing.T) {
+	e := newEnv(t, "")
+	d := e.deployer()
+	e.app.Service = ""
+	d.Compose = &compose.Manager{Runner: &twoServices{failingConfig{env: e}}}
+	_, err := d.Plan(context.Background(), e.app, "v1.3.0")
+	if !errors.Is(err, ErrNoImage) || !strings.Contains(err.Error(), "several services, set service in app.yaml") ||
+		strings.Contains(err.Error(), "APP_TAG") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPlanFlagsDowngrade(t *testing.T) {
+	e := newEnv(t, "v1.3.0@"+d130)
+	p, err := e.deployer().Plan(context.Background(), e.app, "v1.2.3")
+	if err != nil || !p.Downgrade {
+		t.Fatalf("older target: %+v err=%v", p, err)
+	}
+	e = newEnv(t, "v1.2.3@"+d123)
+	p, err = e.deployer().Plan(context.Background(), e.app, "v1.3.0")
+	if err != nil || p.Downgrade {
+		t.Fatalf("newer target: %+v err=%v", p, err)
+	}
+	// a current tag that is not a version cannot be compared: no warning
+	e = newEnv(t, "latest")
+	if p, err = e.deployer().Plan(context.Background(), e.app, "v1.2.3"); err != nil || p.Downgrade {
+		t.Fatalf("current not a version: %+v err=%v", p, err)
+	}
+}

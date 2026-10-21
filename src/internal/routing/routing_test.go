@@ -1,10 +1,15 @@
 package routing
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"helmo/internal/config"
 )
@@ -138,5 +143,72 @@ func TestClientIPFallsBackToPeer(t *testing.T) {
 	r.RemoteAddr = "100.64.0.9:5555"
 	if got := ClientIP(r); got != "100.64.0.9" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolverWatchReloadsOnChange(t *testing.T) {
+	a := config.App{ID: "a", Dir: "/srv/apps/a", Ports: []int{8600}}
+	r := NewResolver([]config.App{a})
+	newReq := func() *http.Request {
+		q := httptest.NewRequest("GET", "/", nil)
+		q.Header.Set("X-Forwarded-Port", "8600")
+		return q
+	}
+
+	var mu sync.Mutex
+	next := []config.App{a}
+	var nextErr error
+	load := func() ([]config.App, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return next, nextErr
+	}
+	set := func(apps []config.App, err error) {
+		mu.Lock()
+		next, nextErr = apps, err
+		mu.Unlock()
+	}
+	changed := make(chan []config.App, 4)
+	logs := make(chan string, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Watch(ctx, time.Millisecond, load, func(apps []config.App) { changed <- apps },
+		func(f string, args ...any) { logs <- fmt.Sprintf(f, args...) })
+
+	// a broken file is reported and the apps that worked stay
+	set(nil, errors.New("app \"a\": parse app.yaml"))
+	select {
+	case l := <-logs:
+		if !strings.Contains(l, "keeping the previous configuration") {
+			t.Fatalf("log %q", l)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no log for the failed load")
+	}
+	if got, ok := r.Resolve(newReq()); !ok || got.Service != "" {
+		t.Fatalf("after failed load: %+v ok=%v", got, ok)
+	}
+
+	// service: added to app.yaml
+	b := a
+	b.Service = "web"
+	set([]config.App{b}, nil)
+	select {
+	case apps := <-changed:
+		if len(apps) != 1 || apps[0].Service != "web" {
+			t.Fatalf("changed %+v", apps)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reload")
+	}
+	if got, ok := r.Resolve(newReq()); !ok || got.Service != "web" {
+		t.Fatalf("after reload: %+v ok=%v", got, ok)
+	}
+
+	// an unchanged load does not call changed again
+	select {
+	case apps := <-changed:
+		t.Fatalf("unexpected reload %+v", apps)
+	case <-time.After(30 * time.Millisecond):
 	}
 }
