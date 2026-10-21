@@ -279,9 +279,11 @@
   let logServices = '';
   let gotLine = false;    // the current stream delivered a line
   let lastMs = 0;         // time of the newest line shown, to continue after it
-  let lastText = '';
+  let lastTexts = new Set(); // texts of the lines shown with time lastMs
   let skipUntilMs = 0;    // after a reconnect: skip lines up to the last one shown
-  let skipText = '';
+  let skipTexts = new Set();
+  let logContainers = []; // containers from the latest status
+  let waitingForRun = false; // the container exited: follow it again when it runs
   let retryTimer = null;
   let retryDelay = LOG_RETRY_MIN_MS;
 
@@ -321,18 +323,17 @@
     if (!skipUntilMs) return false;
     const ms = ev.ts ? Date.parse(ev.ts) : NaN;
     if (ms < skipUntilMs) return true;
-    if (ms === skipUntilMs && ev.text === skipText) {
-      skipUntilMs = 0;
-      return true;
-    }
+    // Several lines can share one millisecond, so all of them are skipped.
+    if (ms === skipUntilMs && skipTexts.has(ev.text)) return true;
     skipUntilMs = 0; // the first new line: show everything from here on
     return false;
   }
 
   function forget() {
     lastMs = 0;
-    lastText = '';
+    lastTexts = new Set();
     skipUntilMs = 0;
+    waitingForRun = false;
   }
 
   function cancelReconnect() {
@@ -360,7 +361,7 @@
     if (sinceSeconds) {
       url += `&since=${sinceSeconds}`;
       skipUntilMs = lastMs;
-      skipText = lastText;
+      skipTexts = lastTexts;
     }
     gotLine = false;
     source = new EventSource(url);
@@ -378,9 +379,11 @@
       }
       addLogLine(ev);
       const ms = ev.ts ? Date.parse(ev.ts) : NaN;
-      if (ms >= lastMs) {
+      if (ms > lastMs) {
         lastMs = ms;
-        lastText = ev.text;
+        lastTexts = new Set([ev.text]);
+      } else if (ms === lastMs) {
+        lastTexts.add(ev.text);
       }
     };
     source.addEventListener('end', (m) => {
@@ -394,6 +397,14 @@
       }
       // Docker ends a followed stream when the container stops, also for a
       // restart; follow the container again once it is back.
+      if (serviceExited($('#log-service').value)) {
+        // A job that ran to the end (a migration): reconnecting would only
+        // read its log again, so wait until the status shows it running.
+        addMarker('— container exited —');
+        logNote('The container has exited. Logs continue when it runs again.');
+        waitingForRun = true;
+        return;
+      }
       addMarker('— container stopped or restarted —');
       logNote('The container stopped; reconnecting when it runs again…');
       scheduleReconnect();
@@ -403,6 +414,13 @@
       logNote('Log stream disconnected. Press Resume to reconnect.');
       setPaused(true);
     };
+  }
+
+  // serviceExited reports whether the latest status shows the containers of
+  // service as stopped (not running and not restarting).
+  function serviceExited(service) {
+    const cs = logContainers.filter((c) => c.service === service);
+    return cs.length > 0 && cs.every((c) => c.state !== 'running' && c.state !== 'restarting');
   }
 
   // resumeLogs continues after the last line shown, or starts with a tail.
@@ -433,6 +451,12 @@
   }
 
   function updateLogServices(containers) {
+    logContainers = containers;
+    if (waitingForRun && !logsPaused && !serviceExited($('#log-service').value)) {
+      waitingForRun = false;
+      retryDelay = LOG_RETRY_MIN_MS;
+      resumeLogs();
+    }
     const services = [...new Set(containers.map((c) => c.service).filter(Boolean))];
     const key = services.join('\n');
     if (key === logServices) return;
